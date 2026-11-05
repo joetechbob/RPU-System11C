@@ -4213,8 +4213,13 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
     if (UseLampsOnOverlay) curLampByte &= LampsOnOverlay[LampStrobe];
 #endif
     
-    RPU_DataWrite(PIA_LAMPS_PORT_B, 0x01 << (LampStrobe));
+    // Deselect every column before the new row data goes out, then select the
+    // new column. Selecting first put the previous column's rows on the new
+    // column for one bus cycle (a ghost; PinMAME's lamp matrix ORs every
+    // write, so the ghost showed as a full-brightness lamp in the emulator).
+    RPU_DataWrite(PIA_LAMPS_PORT_B, 0x00);
     RPU_DataWrite(PIA_LAMPS_PORT_A, curLampByte);
+    RPU_DataWrite(PIA_LAMPS_PORT_B, 0x01 << (LampStrobe));
 
     LampStrobe += 1;
     if ((LampStrobe) >= RPU_NUM_LAMP_BANKS) {
