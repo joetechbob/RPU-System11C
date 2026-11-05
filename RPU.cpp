@@ -26,6 +26,42 @@
 #include "RPU_Config.h"
 #include "RPU.h"
 
+#if RPU_OS_HAS_RAW_ALPHA_FRAME
+#include <util/atomic.h>
+#include "RPU_AlphaScan.h"
+static RPUAlpha::State RawAlpha = { {}, RPUAlpha::None, RPUAlpha::None };
+
+boolean RPU_SetAlphaRawFrame(const uint16_t cells[2][16]) {
+  if (!cells) return false;
+  byte target;
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) { target = RawAlpha.reserve(); }
+  if (target == RPUAlpha::None) return false;
+  // Neither active nor pending can become target while this copy is in flight.
+  // An ISR may consume the previous pending frame during any of these stores.
+  for (byte row = 0; row < 2; ++row)
+    for (byte col = 0; col < 16; ++col)
+      RawAlpha.frames[target][row][col] = cells[row][col];
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) { RawAlpha.pending = target; }
+  return true;
+}
+
+boolean RPU_ReleaseAlphaRawFrame() {
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) { RawAlpha.pending = RPUAlpha::Release; }
+  return true;
+}
+
+static void RPU_ResetAlphaRawFrame() {
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) { RawAlpha.cancel(); }
+  for (byte bank = 0; bank < 3; ++bank)
+    for (byte row = 0; row < 2; ++row)
+      for (byte col = 0; col < 16; ++col)
+        RawAlpha.frames[bank][row][col] = 0;
+}
+#else
+boolean RPU_SetAlphaRawFrame(const uint16_t cells[2][16]) { (void)cells; return false; }
+boolean RPU_ReleaseAlphaRawFrame() { return false; }
+#endif
+
 #define DEBUG_MESSAGES  0
 
 #ifndef RPU_OS_HARDWARE_REV
@@ -1247,14 +1283,27 @@ unsigned long RPU_TestPIAs() {
 // RPU_MPU_ARCHITECTURE >= 10
 void RPU_InitializePIAs() {
   RPU_DataWrite(PIA_DISPLAY_CONTROL_A, 0x31);
+#if RPU_OS_HAS_RAW_ALPHA_FRAME
+  // Diner stock $D51B configures U51 PA7 as an input (W7), PA0..6 outputs.
+  RPU_DataWrite(PIA_DISPLAY_PORT_A, 0x7F);
+#else
   RPU_DataWrite(PIA_DISPLAY_PORT_A, 0xFF);
+#endif
   RPU_DataWrite(PIA_DISPLAY_CONTROL_A, 0x3D);
+#if RPU_OS_HAS_RAW_ALPHA_FRAME
+  RPU_DataWrite(PIA_DISPLAY_PORT_A, 0x70);
+#else
   RPU_DataWrite(PIA_DISPLAY_PORT_A, 0xC0);
+#endif
 
   RPU_DataWrite(PIA_DISPLAY_CONTROL_B, 0x31);
   RPU_DataWrite(PIA_DISPLAY_PORT_B, 0xFF);
   RPU_DataWrite(PIA_DISPLAY_CONTROL_B, 0x3D);
+  #if RPU_OS_HAS_RAW_ALPHA_FRAME
+  RPU_DataWrite(PIA_DISPLAY_PORT_B, 0xFF);
+#else
   RPU_DataWrite(PIA_DISPLAY_PORT_B, 0x00);
+#endif
 
   RPU_DataWrite(PIA_SWITCH_CONTROL_A, 0x38);
   RPU_DataWrite(PIA_SWITCH_PORT_A, 0x00);
@@ -1298,17 +1347,29 @@ void RPU_InitializePIAs() {
   RPU_DataWrite(PIA_ALPHA_DISPLAY_CONTROL_A, 0x38);
   RPU_DataWrite(PIA_ALPHA_DISPLAY_PORT_A, 0xFF);
   RPU_DataWrite(PIA_ALPHA_DISPLAY_CONTROL_A, 0x3C);
+#if RPU_OS_HAS_RAW_ALPHA_FRAME
+  RPU_DataWrite(PIA_ALPHA_DISPLAY_PORT_A, 0xFF);
+#else
   RPU_DataWrite(PIA_ALPHA_DISPLAY_PORT_A, 0x00);
+#endif
 
   RPU_DataWrite(PIA_ALPHA_DISPLAY_CONTROL_B, 0x38);
   RPU_DataWrite(PIA_ALPHA_DISPLAY_PORT_B, 0xFF);
   RPU_DataWrite(PIA_ALPHA_DISPLAY_CONTROL_B, 0x3C);
+#if RPU_OS_HAS_RAW_ALPHA_FRAME
+  RPU_DataWrite(PIA_ALPHA_DISPLAY_PORT_B, 0xFF);
+#else
   RPU_DataWrite(PIA_ALPHA_DISPLAY_PORT_B, 0x00);
+#endif
 
   RPU_DataWrite(PIA_NUM_DISPLAY_CONTROL_A, 0x38);
   RPU_DataWrite(PIA_NUM_DISPLAY_PORT_A, 0xFF);
   RPU_DataWrite(PIA_NUM_DISPLAY_CONTROL_A, 0x3C);
+#if RPU_OS_HAS_RAW_ALPHA_FRAME
+  RPU_DataWrite(PIA_NUM_DISPLAY_PORT_A, 0xFF);
+#else
   RPU_DataWrite(PIA_NUM_DISPLAY_PORT_A, 0x00);
+#endif
 
   RPU_DataWrite(PIA_SOUND_11_CONTROL_A, 0x38);
   RPU_DataWrite(PIA_SOUND_11_PORT_A, 0xFF);
@@ -2098,15 +2159,28 @@ void RPU_SetDisplayFlashCredits(unsigned long curTime, int period) {
 // RPU_MPU_ARCHITECTURE = 15
 byte RPU_SetDisplayText(int displayNumber, char *text, boolean blankByLength) {
   if (displayNumber > 1 || displayNumber < 0) return 0;
+#if RPU_OS_HAS_RAW_ALPHA_FRAME
+  if (!text) return 0;
+#endif
   byte stringLength = 0xff;
   boolean writeSpace = false;
   byte blank = 0;
   byte placeMask = 0x01;
 
   for (stringLength = 0; stringLength < RPU_OS_NUM_DIGITS; stringLength++) {
+#if RPU_OS_HAS_RAW_ALPHA_FRAME
+    if (!writeSpace && text[stringLength] == 0) writeSpace = true;
+#else
     if (text[stringLength] == 0) writeSpace = true;
-    if (!writeSpace) DisplayText[displayNumber][stringLength] = (byte)text[stringLength] - 0x20;
-    else DisplayText[displayNumber][stringLength] = 0;
+#endif
+    if (!writeSpace) {
+#if RPU_OS_HAS_RAW_ALPHA_FRAME
+      const byte ascii = (byte)text[stringLength];
+      DisplayText[displayNumber][stringLength] = (ascii >= 0x20 && ascii < 0x80) ? ascii - 0x20 : 0;
+#else
+      DisplayText[displayNumber][stringLength] = (byte)text[stringLength] - 0x20;
+#endif
+    } else DisplayText[displayNumber][stringLength] = 0;
 
     if (DisplayText[displayNumber][stringLength]) blank |= placeMask;
     placeMask *= 2;
@@ -2128,7 +2202,7 @@ byte RPU_SetDisplay(int displayNumber, unsigned long value, boolean blankByMagni
     blank = blank * 2;
     if (value != 0 || count < minDigits) {
       blank |= 1;
-      if (displayNumber / 2) DisplayDigits[displayNumber][(RPU_OS_NUM_DIGITS - 1) - count] = SevenSegmentNumbers[value % 10];
+      if (displayNumber / 2) DisplayDigits[displayNumber][(RPU_OS_NUM_DIGITS - 1) - count] = RPU_ReadSevenSegmentNumber(value % 10);
       else DisplayText[displayNumber][(RPU_OS_NUM_DIGITS - 1) - count] = (value % 10) + 16;
     } else {
       if (displayNumber / 2) DisplayDigits[displayNumber][(RPU_OS_NUM_DIGITS - 1) - count] = 0;
@@ -2145,15 +2219,18 @@ byte RPU_SetDisplay(int displayNumber, unsigned long value, boolean blankByMagni
 // RPU_MPU_ARCHITECTURE = 15
 void RPU_SetDisplayCredits(int value, boolean displayOn, boolean showBothDigits) {
   byte blank = 0x02;
+#if RPU_OS_HAS_RAW_ALPHA_FRAME
+  if (value < 0) value = 0;
+#endif
   value = value % 100;
   if (value >= 10) {
-    DisplayCreditDigits[0] = SevenSegmentNumbers[value / 10];
+    DisplayCreditDigits[0] = RPU_ReadSevenSegmentNumber(value / 10);
     blank |= 1;
   } else {
-    DisplayCreditDigits[0] = SevenSegmentNumbers[0];
+    DisplayCreditDigits[0] = RPU_ReadSevenSegmentNumber(0);
     if (showBothDigits) blank |= 1;
   }
-  DisplayCreditDigits[1] = SevenSegmentNumbers[value % 10];
+  DisplayCreditDigits[1] = RPU_ReadSevenSegmentNumber(value % 10);
   if (displayOn) DisplayCreditDigitEnable = blank;
   else DisplayCreditDigitEnable = 0;
 }
@@ -2161,15 +2238,18 @@ void RPU_SetDisplayCredits(int value, boolean displayOn, boolean showBothDigits)
 // RPU_MPU_ARCHITECTURE = 15
 void RPU_SetDisplayBallInPlay(int value, boolean displayOn, boolean showBothDigits) {
   byte blank = 0x02;
+#if RPU_OS_HAS_RAW_ALPHA_FRAME
+  if (value < 0) value = 0;
+#endif
   value = value % 100;
   if (value >= 10) {
-    DisplayBIPDigits[0] = SevenSegmentNumbers[value / 10];
+    DisplayBIPDigits[0] = RPU_ReadSevenSegmentNumber(value / 10);
     blank |= 1;
   } else {
-    DisplayBIPDigits[0] = SevenSegmentNumbers[0];
+    DisplayBIPDigits[0] = RPU_ReadSevenSegmentNumber(0);
     if (showBothDigits) blank |= 1;
   }
-  DisplayBIPDigits[1] = SevenSegmentNumbers[value % 10];
+  DisplayBIPDigits[1] = RPU_ReadSevenSegmentNumber(value % 10);
   if (displayOn) DisplayBIPDigitEnable = blank;
   else DisplayBIPDigitEnable = 0;
 }
@@ -2191,13 +2271,18 @@ void RPU_SetDimDivisor(byte level, byte divisor) {
 }
 
 // left shift is iterative on Arduinos, so a bit array is suprisingly faster
-byte BitShiftValues[8] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80};
+const byte BitShiftValues[8] RPU_OS_PROGMEM = {
+   0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80
+};
+static byte RPU_ReadBitShiftValue(byte index) {
+  return RPU_OS_READ_ROM_BYTE(BitShiftValues, index);
+}
 
 void RPU_SetLampState(int lampNum, byte s_lampState, byte s_lampDim, int s_lampFlashPeriod) {
   if (lampNum >= RPU_MAX_LAMPS || lampNum < 0) return;
   byte lampRow = lampNum % 8;
   byte lampCol = lampNum / 8;
-  byte lampBit = BitShiftValues[lampRow];
+  byte lampBit = RPU_ReadBitShiftValue(lampRow);
 
 
   if (s_lampState) {
@@ -2309,7 +2394,7 @@ void RPU_AddLampToOverlay(boolean lampsOnOverlay, int lampNum) {
   if (lampNum >= RPU_MAX_LAMPS || lampNum < 0) return;
   byte lampRow = lampNum % 8;
   byte lampCol = lampNum / 8;
-  byte lampBit = BitShiftValues[lampRow];
+  byte lampBit = RPU_ReadBitShiftValue(lampRow);
 
   if (lampsOnOverlay) {
     LampsOnOverlay[lampCol] &= ~lampBit;
@@ -2322,7 +2407,7 @@ void RPU_RemoveLampFromOverlay(boolean lampsOnOverlay, int lampNum) {
   if (lampNum >= RPU_MAX_LAMPS || lampNum < 0) return;
   byte lampRow = lampNum % 8;
   byte lampCol = lampNum / 8;
-  byte lampBit = BitShiftValues[lampRow];
+  byte lampBit = RPU_ReadBitShiftValue(lampRow);
 
   if (lampsOnOverlay) {
     LampsOnOverlay[lampCol] |= lampBit;
@@ -2370,6 +2455,16 @@ void RPU_ApplyLampsOffOverlay() {
 *******************************************************/
 
 void RPU_ClearVariables() {
+#if RPU_OS_HAS_RAW_ALPHA_FRAME
+  RPU_ResetAlphaRawFrame();
+  for (byte row = 0; row < 2; ++row) {
+    for (byte col = 0; col < RPU_OS_NUM_DIGITS; ++col) DisplayText[row][col] = 0;
+    DisplayCreditDigits[row] = 0;
+    DisplayBIPDigits[row] = 0;
+  }
+  DisplayCreditDigitEnable = 0;
+  DisplayBIPDigitEnable = 0;
+#endif
   // Reset solenoid stack
   SolenoidStackFirst = 0;
   SolenoidStackLast = 0;
@@ -3676,13 +3771,31 @@ unsigned long RPU_InitializeMPUArch1(unsigned long initOptions, byte creditReset
 #if (RPU_MPU_ARCHITECTURE>=10)
 // RPU_MPU_ARCHITECTURE >= 10
 boolean CheckSwitchStack(byte switchNum) {
-  for (byte stackIndex = SwitchStackFirst; stackIndex != SwitchStackLast; stackIndex++) {
-    if (stackIndex >= SWITCH_STACK_SIZE) stackIndex = 0;
+  // Called by the non-nested ISR: queue indices cannot change during this scan.
+  byte stackIndex = SwitchStackFirst;
+  const byte last = SwitchStackLast;
+  if (stackIndex >= SWITCH_STACK_SIZE || last >= SWITCH_STACK_SIZE) return false;
+  for (byte checked = 0; checked < SWITCH_STACK_SIZE && stackIndex != last; checked++) {
     if (SwitchStack[stackIndex] == switchNum) return true;
+    stackIndex += 1;
+    if (stackIndex >= SWITCH_STACK_SIZE) stackIndex = 0;
   }
   return false;
 }
 
+
+#if (RPU_MPU_ARCHITECTURE==15)
+#if RPU_OS_HAS_RAW_ALPHA_FRAME
+static uint16_t RPU_DinerAlphaGlyph(byte index) {
+  if (index >= sizeof(FourteenSegmentASCII) / sizeof(FourteenSegmentASCII[0])) return 0;
+  return RPU_OS_READ_ISR_ROM_WORD_NEAR(FourteenSegmentASCII, index);
+}
+#else
+static uint16_t RPU_DinerAlphaGlyph(byte index) {
+  return RPU_OS_READ_ISR_ROM_WORD_NEAR(FourteenSegmentASCII, index);
+}
+#endif
+#endif
 
 volatile unsigned long LampPass = 0;
 volatile byte LampStrobe = 0;
@@ -3690,10 +3803,13 @@ volatile byte DisplayStrobe = 0;
 volatile byte InterruptPass = 0;
 boolean NeedToTurnOffTriggeredSolenoids = true;
 #if (RPU_OS_NUM_DIGITS==6)
-byte BlankingBit[16] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x01, 0x02, 0x01, 0x02, 0x04, 0x08, 0x010, 0x20, 0x01, 0x02};
+const byte BlankingBit[16] RPU_OS_PROGMEM = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x01, 0x02, 0x01, 0x02, 0x04, 0x08, 0x010, 0x20, 0x01, 0x02};
 #elif (RPU_OS_NUM_DIGITS==7)
-byte BlankingBit[16] = {0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x02, 0x01, 0x02, 0x04, 0x08, 0x010, 0x20, 0x40};
+const byte BlankingBit[16] RPU_OS_PROGMEM = {0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x02, 0x01, 0x02, 0x04, 0x08, 0x010, 0x20, 0x40};
 #endif
+static byte RPU_ReadBlankingBit(byte index) {
+  return RPU_OS_READ_ISR_ROM_BYTE_NEAR(BlankingBit, index);
+}
 volatile byte UpDownPassCounter = 0;
 
 // INTERRUPT HANDLER
@@ -3716,32 +3832,47 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
   }
 
 #if (RPU_MPU_ARCHITECTURE==15)
+#if RPU_OS_HAS_RAW_ALPHA_FRAME
+  if (DisplayStrobe == 0) RawAlpha.boundary();
+  const byte rawBank = RawAlpha.active;
+  if (rawBank != RPUAlpha::None) {
+    RPUAlpha::write(RawAlpha.frames[rawBank][0][DisplayStrobe],
+                    RawAlpha.frames[rawBank][1][DisplayStrobe],
+                    DisplayStrobe, BoardLEDs, RPU_DataWrite);
+  } else {
+#endif
   // Create display data
   unsigned int digit1 = 0x0000;
   byte digit2 = 0x00;
-  byte blankingBit = BlankingBit[DisplayStrobe];
+  byte blankingBit = RPU_ReadBlankingBit(DisplayStrobe);
   if (DisplayStrobe == 0) {
     if (DisplayBIPDigitEnable & blankingBit) digit1 = DisplayBIPDigits[0];
     if (DisplayCreditDigitEnable & blankingBit) digit2 = DisplayCreditDigits[0];
   } else if (DisplayStrobe < 8) {
-    if (DisplayDigitEnable[0]&blankingBit) digit1 = FourteenSegmentASCII[DisplayText[0][DisplayStrobe - 1]];
+    if (DisplayDigitEnable[0]&blankingBit) digit1 = RPU_DinerAlphaGlyph(DisplayText[0][DisplayStrobe - 1]);
     if (DisplayDigitEnable[2]&blankingBit) digit2 = DisplayDigits[2][DisplayStrobe - 1];
   } else if (DisplayStrobe == 8) {
     if (DisplayBIPDigitEnable & blankingBit) digit1 = DisplayBIPDigits[1];
     if (DisplayCreditDigitEnable & blankingBit) digit2 = DisplayCreditDigits[1];
   } else {
-    if (DisplayDigitEnable[1]&blankingBit) digit1 = FourteenSegmentASCII[DisplayText[1][DisplayStrobe - 9]];
+    if (DisplayDigitEnable[1]&blankingBit) digit1 = RPU_DinerAlphaGlyph(DisplayText[1][DisplayStrobe - 9]);
     if (DisplayDigitEnable[3]&blankingBit) digit2 = DisplayDigits[3][DisplayStrobe - 9];
   }
+#if RPU_OS_HAS_RAW_ALPHA_FRAME
+  RPUAlpha::write(RPUAlpha::fromPacked14(digit1), digit2,
+                  DisplayStrobe, BoardLEDs, RPU_DataWrite);
+  }
+#else
   // Show current display digit
   RPU_DataWrite(PIA_DISPLAY_PORT_A, BoardLEDs | DisplayStrobe);
   RPU_DataWrite(PIA_ALPHA_DISPLAY_PORT_A, (digit1 >> 7) & 0x7F);
   RPU_DataWrite(PIA_ALPHA_DISPLAY_PORT_B, digit1 & 0x7F);
   RPU_DataWrite(PIA_DISPLAY_PORT_B, digit2 & 0x7F);
+#endif
 #elif (RPU_MPU_ARCHITECTURE==13)
   // Create display data
   byte digit1 = 0x0F, digit2 = 0x0F;
-  byte blankingBit = BlankingBit[DisplayStrobe];
+  byte blankingBit = RPU_ReadBlankingBit(DisplayStrobe);
   boolean comma12 = false, comma34 = false;
 
   if (DisplayStrobe == 0) {
@@ -3788,7 +3919,7 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
 #else
   // Create display data
   byte digit1 = 0x0F, digit2 = 0x0F;
-  byte blankingBit = BlankingBit[DisplayStrobe];
+  byte blankingBit = RPU_ReadBlankingBit(DisplayStrobe);
   if (DisplayStrobe < 6) {
     if (DisplayDigitEnable[0]&blankingBit) digit1 = DisplayDigits[0][DisplayStrobe];
     if (DisplayDigitEnable[2]&blankingBit) digit2 = DisplayDigits[2][DisplayStrobe];

@@ -24,6 +24,40 @@
 #define RPU_OS_MAJOR_VERSION  5
 #define RPU_OS_MINOR_VERSION  16
 
+#if defined(__AVR__)
+#include <avr/pgmspace.h>
+#define RPU_OS_PROGMEM PROGMEM
+#define RPU_OS_READ_ROM_BYTE(table, index) \
+  pgm_read_byte_far(pgm_get_far_address(table) + (index))
+#define RPU_OS_READ_ROM_WORD(table, index) \
+  pgm_read_word_far(pgm_get_far_address(table) + ((index) * 2))
+// These tables are read from the display ISR; build scripts enforce near range.
+#define RPU_OS_READ_ISR_ROM_BYTE_NEAR(table, index) \
+  pgm_read_byte_near((uint16_t)(pgm_get_far_address(table) + (index)))
+#define RPU_OS_READ_ISR_ROM_WORD_NEAR(table, index) \
+  pgm_read_word_near((uint16_t)(pgm_get_far_address(table) + ((index) * 2)))
+#else
+#define RPU_OS_PROGMEM
+#define RPU_OS_READ_ROM_BYTE(table, index) ((table)[index])
+#define RPU_OS_READ_ROM_WORD(table, index) ((table)[index])
+#define RPU_OS_READ_ISR_ROM_BYTE_NEAR(table, index) ((table)[index])
+#define RPU_OS_READ_ISR_ROM_WORD_NEAR(table, index) ((table)[index])
+#endif
+
+// Supported/tested target only; all other configurations retain the old scan.
+#if defined(RPU_OS_USE_DINER_ALPHA_SCAN) && RPU_OS_USE_DINER_ALPHA_SCAN && \
+    RPU_OS_HARDWARE_REV == 102 && RPU_MPU_ARCHITECTURE == 15 && \
+    defined(RPU_MPU_BUILD_FOR_6800) && RPU_MPU_BUILD_FOR_6800 == 0 && \
+    RPU_OS_NUM_DIGITS == 7 && defined(__AVR_ATmega2560__)
+#define RPU_OS_HAS_RAW_ALPHA_FRAME 1
+#endif
+// Foreground-only, serialized callers. Frames are copied, then take effect at
+// digit 0. Latest completed update wins. Release is idempotent and deferred to
+// digit 0 too. Invalid/null frames return false without changing ownership.
+// Raw words use stock RAM order; strobe 15 retains the ROM's bit-7 suppression.
+boolean RPU_SetAlphaRawFrame(const uint16_t cells[2][16]);
+boolean RPU_ReleaseAlphaRawFrame();
+
 struct PlayfieldAndCabinetSwitch {
   byte switchNum;
   byte solenoid;
@@ -232,7 +266,7 @@ void RPU_WriteULToEEProm(unsigned short startByte, unsigned long value);
 
 // Alpha numeric numbers and alphabet
 
-const uint16_t SevenSegmentNumbers[10] = {
+const uint16_t SevenSegmentNumbers[10] RPU_OS_PROGMEM = {
   0x3F, /* 0 */
   0x06, /* 1 */
   0x5B, /* 2 */
@@ -246,7 +280,7 @@ const uint16_t SevenSegmentNumbers[10] = {
 };
 
 // alphanumeric 14-segment display (ASCII)
-const uint16_t FourteenSegmentASCII[96] = {
+const uint16_t FourteenSegmentASCII[96] RPU_OS_PROGMEM = {
   0x0000,/*   converted 0x0000 to 0x0000*/
   0x0006,/* ! converted 0x4006 to 0x0006*/
   0x0102,/* " converted 0x0202 to 0x0102*/
@@ -344,6 +378,10 @@ const uint16_t FourteenSegmentASCII[96] = {
   0x2640,/* ~ converted 0x0CC0 to 0x2640*/
   0x0000 /*  converted 0x0000 to 0x0000*/
 };
+
+static uint16_t RPU_ReadSevenSegmentNumber(byte index) {
+  return RPU_OS_READ_ROM_WORD(SevenSegmentNumbers, index);
+}
 
 #endif
 
