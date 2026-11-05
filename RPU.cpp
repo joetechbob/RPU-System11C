@@ -191,10 +191,19 @@ byte SwitchInverter[NUM_SWITCH_BYTES] = {0x00};
 
 #ifdef RPU_STREAMLINED_IMMEDIATE_SOLENOIDS
 #define MAX_IMMEDIATE_STREAMLINED_SOLENOIDS     10
+#if (RPU_MPU_ARCHITECTURE<10)
 byte ImmediateSolenoidSwitchByte[MAX_IMMEDIATE_STREAMLINED_SOLENOIDS]; // Can't imagine more than 10 immediate solenoids
 byte ImmediateSolenoidSwitchFlag[MAX_IMMEDIATE_STREAMLINED_SOLENOIDS]; // Can't imagine more than 10 immediate solenoids
+#endif
 byte ImmediateSolenoidSwitchMask[NUM_SWITCH_BYTES];
 #endif
+// The switch -> solenoid table passed to RPU_SetupGameSwitches() lives in flash
+// (PROGMEM) so it costs no SRAM; every field is read through this accessor
+// (LPM, 16-bit near address: keep the table in the lower 64 KiB of flash, the
+// ISR reads it).  Architecture >= 10 keeps no per-entry SRAM at all: the ISR
+// filters with the per-column bit mask below and matches the few table entries
+// straight from flash.
+#define RPU_GAME_SWITCH_FIELD(index, field) ((byte)pgm_read_byte(&((const PlayfieldAndCabinetSwitch *)GameSwitches)[(index)].field))
 
 #ifdef RPU_OS_USE_DIP_SWITCHES
 byte DipSwitches[4];
@@ -1583,7 +1592,13 @@ byte RPU_GetDipSwitches(byte index) {
 #endif
 }
 
+// s_gameSwitchArray must point to a PROGMEM table (see RPU_GAME_SWITCH_FIELD).
 void RPU_SetupGameSwitches(int s_numSwitches, int s_numPrioritySwitches, PlayfieldAndCabinetSwitch *s_gameSwitchArray) {
+#ifdef RPU_STREAMLINED_IMMEDIATE_SOLENOIDS
+  // Architecture < 10 keeps per-entry SRAM arrays of MAX_IMMEDIATE_STREAMLINED_SOLENOIDS entries
+  if (s_numSwitches > MAX_IMMEDIATE_STREAMLINED_SOLENOIDS) s_numSwitches = MAX_IMMEDIATE_STREAMLINED_SOLENOIDS;
+#endif
+  if (s_numPrioritySwitches > s_numSwitches) s_numPrioritySwitches = s_numSwitches;
   NumGameSwitches = s_numSwitches;
   NumGamePrioritySwitches = s_numPrioritySwitches;
   GameSwitches = s_gameSwitchArray;
@@ -2597,6 +2612,7 @@ void RPU_ClearVariables() {
   }
 
 #ifdef RPU_STREAMLINED_IMMEDIATE_SOLENOIDS
+#if (RPU_MPU_ARCHITECTURE<10)
   for (byte count = 0; count < MAX_IMMEDIATE_STREAMLINED_SOLENOIDS; count++) {
     ImmediateSolenoidSwitchByte[count] = 0x00;
     ImmediateSolenoidSwitchFlag[count] = 0x00;
@@ -2625,6 +2641,18 @@ void RPU_ClearVariables() {
 */    
 
   }
+#else
+  // Architecture >= 10: the Timer1 ISR matches the table entries straight from flash;
+  // only the per-column bit mask (which switches have an entry) is kept in SRAM.
+  if (GameSwitches) {
+    for (byte count = 0; count < NumGameSwitches; count++) {
+      byte gameSwitchNum = RPU_GAME_SWITCH_FIELD(count, switchNum);
+      if (gameSwitchNum < MAX_NUM_SWITCHES) {
+        ImmediateSolenoidSwitchMask[gameSwitchNum / 8] |= (0x01 << (gameSwitchNum % 8));
+      }
+    }
+  }
+#endif
 #endif
 
   for (byte count = 0; count < TIMED_SOLENOID_STACK_SIZE; count++) {
@@ -4096,9 +4124,42 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
 
     // If there are any closures, add them to the switch stack
     for (byte switchCol = 0; switchCol < NUM_SWITCH_BYTES; switchCol++) {
+#ifdef RPU_STREAMLINED_IMMEDIATE_SOLENOIDS
+      // Switch-driven solenoids registered with RPU_SetupGameSwitches (pop bumpers,
+      // slingshots), same two-step response as the architecture < 10 scan: one pulse
+      // slot at the front of the stack when the switch first reads closed, then the
+      // table's hold time once the closure is validated.  Only while the game enable
+      // line (GameOn, RPU_SetDisableFlippers) is on, so attract mode and tilt stay
+      // quiet; the closure itself still goes to the switch stack below.
+      if (!GameOverLine) {
+        byte startingClosures = SwitchesNow[switchCol] & ~SwitchesMinus1[switchCol] & ImmediateSolenoidSwitchMask[switchCol];
+        if (startingClosures) {
+          for (byte immediateTrigger = 0; immediateTrigger < NumGamePrioritySwitches; immediateTrigger++) {
+            byte triggerSwitch = RPU_GAME_SWITCH_FIELD(immediateTrigger, switchNum);
+            if ((triggerSwitch / 8) == switchCol && (startingClosures & (0x01 << (triggerSwitch % 8)))) {
+              PushToFrontOfSolenoidStack(RPU_GAME_SWITCH_FIELD(immediateTrigger, solenoid), 1);
+            }
+          }
+        }
+      }
+#endif
       byte validClosures = (SwitchesNow[switchCol] & SwitchesMinus1[switchCol]) & ~SwitchesMinus2[switchCol];
       // If there is a valid switch closure (off, on, on)
       if (validClosures) {
+#ifdef RPU_STREAMLINED_IMMEDIATE_SOLENOIDS
+        if (!GameOverLine && (validClosures & ImmediateSolenoidSwitchMask[switchCol])) {
+          for (byte immediateTrigger = 0; immediateTrigger < NumGameSwitches; immediateTrigger++) {
+            byte triggerSwitch = RPU_GAME_SWITCH_FIELD(immediateTrigger, switchNum);
+            if ((triggerSwitch / 8) == switchCol && (validClosures & (0x01 << (triggerSwitch % 8)))) {
+              if (immediateTrigger < NumGamePrioritySwitches) {
+                PushToFrontOfSolenoidStack(RPU_GAME_SWITCH_FIELD(immediateTrigger, solenoid), RPU_GAME_SWITCH_FIELD(immediateTrigger, solenoidHoldTime));
+              } else {
+                RPU_PushToSolenoidStack(RPU_GAME_SWITCH_FIELD(immediateTrigger, solenoid), RPU_GAME_SWITCH_FIELD(immediateTrigger, solenoidHoldTime));
+              }
+            }
+          }
+        }
+#endif
         // Loop on bits of switch byte
         for (byte bitCount = 0; bitCount < 8; bitCount++) {
           // If this switch bit is closed
