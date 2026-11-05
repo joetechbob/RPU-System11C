@@ -1795,6 +1795,29 @@ byte PullFirstFromSolenoidStack() {
   return (coil == RPU_SOLENOID_ENTRY_IDLE) ? SOLENOID_STACK_EMPTY : coil;
 }
 
+// True while a pulse on drivers 1-8 (library index 0-7 = sols 1-8, A side or C side) is playing or still queued.  The
+// A/C relay arbiter must not switch sol 12 under such a pulse: a jet / sling front push (PushSwitchSolenoidPulse)
+// can suspend and stretch a running coil pulse, so a timer alone cannot tell when it really ended.  Idle entries
+// (RPU_SOLENOID_ENTRY_IDLE) and the switch-driven coils (index 16-21) do not count.  Read with interrupts off: the
+// Timer1 ISR pulls from and pushes to the FIFO.
+boolean RPU_SolenoidStackBusyShared() {
+  boolean busy = false;
+#if (RPU_MPU_ARCHITECTURE==15)
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+#endif
+    if (SolenoidActiveLeft != 0 && (SolenoidActive & RPU_SOLENOID_ENTRY_COIL) < 8) busy = true;
+    byte index = SolenoidStackFirst;
+    while (!busy && index != SolenoidStackLast) {
+      if ((SolenoidStack[index] & RPU_SOLENOID_ENTRY_COIL) < 8) busy = true;
+      index += 1;
+      if (index >= SOLENOID_STACK_SIZE) index = 0;
+    }
+#if (RPU_MPU_ARCHITECTURE==15)
+  }
+#endif
+  return busy;
+}
+
 // Switch-driven coil pulse (jet / sling), validated closure.  One pulse per coil at a
 // time: while the coil's pulse is pending or active a further closure is ignored
 // (sling lockout), or, when `refire` is set (jets), queues ONE re-fire behind it after a
