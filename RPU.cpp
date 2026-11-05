@@ -345,6 +345,11 @@ TimedSoundEntry TimedSoundStack[TIMED_SOUND_STACK_SIZE] = {0, 0, 0, 0};
 #define PIA_SOUND_11_CONTROL_A          0x2101
 #define PIA_SOLENOID_11_PORT_B          0x2102
 #define PIA_SOLENOID_11_CONTROL_B       0x2103
+// System 11C: PIA0 ($2100) CB2 is the GameOn / flipper-relay / special-solenoid
+// enable (sol 23).  CB2 LOW = enabled (CRB 0x34), CB2 HIGH = disabled (CRB 0x3C).
+#define S11C_GAMEON_ENABLED_CRB         0x34
+#define S11C_GAMEON_DISABLED_CRB        0x3C
+#define S11C_GAMEON_DISABLED_DDR_CRB    0x38
 #define PIA_ALPHA_DISPLAY_PORT_A        0x2C00
 #define PIA_ALPHA_DISPLAY_CONTROL_A     0x2C01
 #define PIA_ALPHA_DISPLAY_PORT_B        0x2C02
@@ -1751,8 +1756,12 @@ void RPU_SetDisableFlippers(boolean disableFlippers, byte solbit) {
 #if (RPU_OS_HARDWARE_REV==200)
   RPU_LISYSendGameOverState(disableFlippers);
 #else
+#if (RPU_MPU_ARCHITECTURE==15)
+  RPU_DataWrite(PIA_SOLENOID_11_CONTROL_B, disableFlippers ? S11C_GAMEON_DISABLED_CRB : S11C_GAMEON_ENABLED_CRB);
+#else
   if (disableFlippers) RPU_DataWrite(PIA_SOLENOID_CONTROL_B, 0x34);
   else RPU_DataWrite(PIA_SOLENOID_CONTROL_B, 0x3C);
+#endif
 #endif  
 }
 
@@ -1794,13 +1803,22 @@ void RPU_SetCoinLockout(boolean lockoutOn, byte solNum) {
 // RPU_MPU_ARCHITECTURE >= 10
 void RPU_DisableSolenoidStack() {
   SolenoidStackEnabled = false;
+#if (RPU_MPU_ARCHITECTURE==15)
+  RPU_DataWrite(PIA_SOLENOID_11_CONTROL_B, S11C_GAMEON_DISABLED_CRB);
+#else
   RPU_DataWrite(PIA_SOLENOID_CONTROL_B, 0x34);
+#endif
 }
 
 // RPU_MPU_ARCHITECTURE >= 10
 void RPU_EnableSolenoidStack() {
   SolenoidStackEnabled = true;
+#if (RPU_MPU_ARCHITECTURE==15)
+  // Re-enabling the stack must not switch the flipper relay on during game over.
+  RPU_DataWrite(PIA_SOLENOID_11_CONTROL_B, GameOverLine ? S11C_GAMEON_DISABLED_CRB : S11C_GAMEON_ENABLED_CRB);
+#else
   RPU_DataWrite(PIA_SOLENOID_CONTROL_B, 0x3C);
+#endif
 }
 
 // RPU_MPU_ARCHITECTURE >= 10
@@ -4186,7 +4204,11 @@ unsigned long RPU_InitializeMPUArch10(unsigned long initOptions, byte creditRese
   }
   // Make sure PIA IV (solenoid) CB2 is off so that solenoids are off
   RPU_SetAddressPinsDirection(RPU_PINS_OUTPUT);
+#if (RPU_MPU_ARCHITECTURE==15)
+  RPU_DataWrite(PIA_SOLENOID_11_CONTROL_B, S11C_GAMEON_DISABLED_DDR_CRB);
+#else
   RPU_DataWrite(PIA_SOLENOID_CONTROL_B, 0x30);
+#endif
   GameOverLine = true;
 
   delay(1000);
