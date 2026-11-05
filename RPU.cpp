@@ -264,6 +264,13 @@ volatile byte SolenoidStackLast;
 volatile byte SolenoidStack[SOLENOID_STACK_SIZE];
 volatile byte SolenoidStackSlots[SOLENOID_STACK_SIZE];
 volatile byte SolenoidActive = SOLENOID_STACK_EMPTY;
+// Coil safety (patch 0011).
+#define RPU_SOLENOID_MIN_OFF_SLOTS   16   // 15 idle slots = 31.1 ms >= the stock 29.7 ms gap after a pulse
+volatile byte SolenoidLastCoil = 0xFF;    // ordinary coil (index 0-15) whose pulse ended last, 0xFF none
+volatile byte SolenoidCoolLeft = 0;       // idle slots before that coil may start again
+volatile byte SpecialActive = 0xFF;       // special (index 0-5) whose CA2/CB2 line is asserted, 0xFF none
+volatile byte ContinuousDeadline[16];     // per continuous output: 2-slot units (4.14 ms) left, 0 = no deadline
+volatile byte ContinuousDeadlineDiv = 0;
 volatile byte SolenoidActiveLeft = 0;
 volatile byte SwitchSolenoidBusy = 0;     // bit n: switch-driven coil 16+n has a pulse pending or active
 volatile byte SwitchSolenoidRefire = 0;   // bit n: a re-fire of that coil is queued behind its pulse
@@ -1766,7 +1773,13 @@ boolean PushToFrontOfSolenoidStack(byte solenoidNumber, byte numSlots, byte flag
 byte PullFirstFromSolenoidStack() {
   if (SolenoidActiveLeft == 0) {
     // Start the next pulse.  If first and last are equal, there's nothing on the stack
+    if (SolenoidCoolLeft != 0) SolenoidCoolLeft -= 1;
     if (SolenoidStackFirst == SolenoidStackLast) return SOLENOID_STACK_EMPTY;
+    // Minimum off time: the same ordinary coil never starts again within the stock gap after its pulse ended
+    // (back-to-back entries of one coil would merge into one long pulse).  Specials (jets, slings) are exempt.
+    if (SolenoidCoolLeft != 0 && (SolenoidStack[SolenoidStackFirst] & RPU_SOLENOID_ENTRY_COIL) == SolenoidLastCoil) {
+      return SOLENOID_STACK_EMPTY;
+    }
     SolenoidActive = SolenoidStack[SolenoidStackFirst];
     SolenoidActiveLeft = SolenoidStackSlots[SolenoidStackFirst];
     SolenoidStackFirst += 1;
@@ -1785,6 +1798,10 @@ byte PullFirstFromSolenoidStack() {
   SolenoidActiveLeft -= 1;
   if (SolenoidActiveLeft == 0) {
     SolenoidActive = SOLENOID_STACK_EMPTY;
+    if ((entry & RPU_SOLENOID_ENTRY_COIL) < 16) {
+      SolenoidLastCoil = entry & RPU_SOLENOID_ENTRY_COIL;
+      SolenoidCoolLeft = RPU_SOLENOID_MIN_OFF_SLOTS;
+    }
     // Last slot of a switch-driven pulse: the coil can be hit again, unless a re-fire is queued
     if ((entry & RPU_SOLENOID_ENTRY_TRACKED) && (entry & RPU_SOLENOID_ENTRY_COIL) >= RPU_SWITCH_SOLENOID_FIRST) {
       byte bit = 1 << ((entry & RPU_SOLENOID_ENTRY_COIL) - RPU_SWITCH_SOLENOID_FIRST);
@@ -1977,6 +1994,24 @@ boolean RPU_GetDisableFlippers(byte solbit) {
   return GameOverLine;
 }
 
+// Continuous output with an ISR-enforced deadline: on for at most maxMs (counted in 2-slot units of 4.14 ms, rounded down,
+// 1.05 s max), then the Timer1 solenoid pass forces it off even if the foreground never calls again (patch 0011).  Arch 15 only.
+void RPU_SetContinuousSolenoidMax(boolean solOn, byte solNum, unsigned short maxMs) {
+  RPU_SetContinuousSolenoid(solOn, solNum);
+#if (RPU_MPU_ARCHITECTURE==15)
+  if (solOn && solNum < 16) {
+    unsigned short units = (unsigned short)(((unsigned long)maxMs * 1000UL) / 4144UL);
+    if (units == 0) units = 1;
+    if (units > 255) units = 255;
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+      ContinuousDeadline[solNum] = (byte)units;
+    }
+  }
+#else
+  (void)maxMs;
+#endif
+}
+
 // RPU_MPU_ARCHITECTURE >= 10
 void RPU_SetContinuousSolenoid(boolean solOn, byte solNum) {
   unsigned short oldCont = ContinuousSolenoidBits;
@@ -1988,6 +2023,7 @@ void RPU_SetContinuousSolenoid(boolean solOn, byte solNum) {
 #if (RPU_MPU_ARCHITECTURE==15)
   // 16-bit read-modify-write shared with the Timer1 ISR
   ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+    ContinuousDeadline[solNum] = 0;     // a plain on/off call has no deadline (GI, A/C relay, flipper enable, coin lockout)
     if (solOn) ContinuousSolenoidBits |= (1 << solNum);
     else ContinuousSolenoidBits &= ~(1 << solNum);
   }
@@ -2738,6 +2774,9 @@ void RPU_ClearVariables() {
   SolenoidStackLast = 0;
   SolenoidActive = SOLENOID_STACK_EMPTY;
   SolenoidActiveLeft = 0;
+  SolenoidLastCoil = 0xFF;
+  SolenoidCoolLeft = 0;
+  SpecialActive = 0xFF;
   SwitchSolenoidBusy = 0;
   SwitchSolenoidRefire = 0;
 
@@ -4366,6 +4405,19 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
   } else {
     // See if any solenoids need to be switched
     byte solenoidOn = PullFirstFromSolenoidStack();
+#if (RPU_MPU_ARCHITECTURE==15)
+    // ISR-enforced deadline of a continuous output (RPU_SetContinuousSolenoidMax): a stalled foreground cannot leave it on.
+    ContinuousDeadlineDiv += 1;
+    if (ContinuousDeadlineDiv >= 2) {
+      ContinuousDeadlineDiv = 0;
+      for (byte d = 0; d < 16; d++) {
+        if (ContinuousDeadline[d] != 0) {
+          ContinuousDeadline[d] -= 1;
+          if (ContinuousDeadline[d] == 0) ContinuousSolenoidBits &= ~((unsigned short)1 << d);
+        }
+      }
+    }
+#endif
     unsigned short solenoidBits = ContinuousSolenoidBits;
 #if (RPU_MPU_ARCHITECTURE==15)
     if (HoldPwmBit) {
@@ -4389,6 +4441,7 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
         if (NeedToTurnOffTriggeredSolenoids) {
 #if (RPU_MPU_ARCHITECTURE==15)
           for (byte ss = 0; ss < S11C_SPECIAL_SOL_COUNT; ss++) RPU_DataWrite(S11CSpecialSolenoidControl(ss), S11C_SPECIAL_SOL_OFF_CR);
+          SpecialActive = 0xFF;
 #else
           RPU_DataWrite(PIA_LAMPS_CONTROL_B, 0x3C);
           RPU_DataWrite(PIA_LAMPS_CONTROL_A, 0x3C);
@@ -4402,7 +4455,13 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
       } else {
 #if (RPU_MPU_ARCHITECTURE==15)
         if (solenoidOn < 16 + S11C_SPECIAL_SOL_COUNT) {
+          // Ownership change special -> special (a jet or sling pre-empting the feeder, jet then sling): the outgoing
+          // line is a maintained CA2/CB2 low output and must be released explicitly (patch 0011).
+          if (SpecialActive != 0xFF && SpecialActive != (byte)(solenoidOn - 16)) {
+            RPU_DataWrite(S11CSpecialSolenoidControl(SpecialActive), S11C_SPECIAL_SOL_OFF_CR);
+          }
           RPU_DataWrite(S11CSpecialSolenoidControl(solenoidOn - 16), S11C_SPECIAL_SOL_ON_CR);
+          SpecialActive = solenoidOn - 16;
           NeedToTurnOffTriggeredSolenoids = true;
         }
 #else
@@ -4419,6 +4478,7 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
       NeedToTurnOffTriggeredSolenoids = false;
 #if (RPU_MPU_ARCHITECTURE==15)
       for (byte ss = 0; ss < S11C_SPECIAL_SOL_COUNT; ss++) RPU_DataWrite(S11CSpecialSolenoidControl(ss), S11C_SPECIAL_SOL_OFF_CR);
+      SpecialActive = 0xFF;
 #else
       RPU_DataWrite(PIA_LAMPS_CONTROL_B, 0x3C);
       RPU_DataWrite(PIA_LAMPS_CONTROL_A, 0x3C);
