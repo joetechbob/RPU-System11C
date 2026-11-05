@@ -209,15 +209,55 @@ byte ImmediateSolenoidSwitchMask[NUM_SWITCH_BYTES];
 byte DipSwitches[4];
 #endif
 
-#if (RPU_OS_HARDWARE_REV>2)
+// Solenoid FIFO.  One entry is one PULSE, not one slot: SolenoidStack[i] names the
+// coil and SolenoidStackSlots[i] holds the line on for that many consecutive
+// solenoid slots (a slot is two Timer1 ticks = 2.0718 ms on the Mega at 16 MHz).
+// A 85-slot subway kick (176 ms) therefore takes ONE entry and does not block the
+// queue for 85 entries.  The pulse being played is held outside the FIFO
+// (SolenoidActive / SolenoidActiveLeft).  Only one pulse is active at a time, as
+// with the stock one-entry-per-slot FIFO; a front push suspends the active pulse
+// and resumes its remaining slots after the new one.
+//
+// Entry byte (SolenoidStack / SolenoidActive):
+//   bits 0-4  coil index (library index = Williams number - 1), 0x1F = idle slot(s):
+//             no coil, used as the off gap before a jet re-fire
+//   bit 5     RPU_SOLENOID_ENTRY_TRACKED: switch-driven pulse (jets/slings), clears
+//             its coil's SwitchSolenoidBusy bit when its last slot has played
+//   bit 6     RPU_SOLENOID_ENTRY_REFIRE: this is the queued re-fire of a jet
+//   bit 7     reserved (hold-PWM / continuous entries for diverter-style coils)
+// Slots: 1-255 (0 is never stored).  The continuous path (RPU_SetContinuousSolenoid,
+// sols 1-16) is OR-ed into the same $2200/$2102 write and may overlap any entry, so
+// a long pull plus a timed hold needs no entries at all.
+#if (RPU_MPU_ARCHITECTURE==15)
+#define SOLENOID_STACK_SIZE 32
+#elif (RPU_OS_HARDWARE_REV>2)
 #define SOLENOID_STACK_SIZE 150
 #else
 #define SOLENOID_STACK_SIZE 60
 #endif
 #define SOLENOID_STACK_EMPTY 0xFF
+#define RPU_SOLENOID_ENTRY_COIL     0x1F
+#define RPU_SOLENOID_ENTRY_IDLE     0x1F
+#define RPU_SOLENOID_ENTRY_TRACKED  0x20
+#define RPU_SOLENOID_ENTRY_REFIRE   0x40
+// Switch table solenoidHoldTime (PlayfieldAndCabinetSwitch, arch >= 10): bits 0-6 = pulse
+// slots after the first-closure probe slot, bit 7 = let a closure during the pulse queue
+// one re-fire (jets).  Without bit 7 the closure is ignored until the pulse ends (slings).
+#define RPU_SWITCH_SOLENOID_REFIRE     0x80
+#define RPU_SWITCH_SOLENOID_HOLD_MASK  0x7F
+// Off gap before a re-fired jet pulse: 7 slots = 14.5 ms (stock re-fires after ~15 ms off).
+#define RPU_SWITCH_SOLENOID_REFIRE_GAP_SLOTS 7
+// Switch-driven coils tracked for lockout / re-fire: library index 16-21 (sol 17-22).
+#define RPU_SWITCH_SOLENOID_FIRST   16
 volatile byte SolenoidStackFirst;
 volatile byte SolenoidStackLast;
 volatile byte SolenoidStack[SOLENOID_STACK_SIZE];
+volatile byte SolenoidStackSlots[SOLENOID_STACK_SIZE];
+volatile byte SolenoidActive = SOLENOID_STACK_EMPTY;
+volatile byte SolenoidActiveLeft = 0;
+volatile byte SwitchSolenoidBusy = 0;     // bit n: switch-driven coil 16+n has a pulse pending or active
+volatile byte SwitchSolenoidRefire = 0;   // bit n: a re-fire of that coil is queued behind its pulse
+boolean PushToFrontOfSolenoidStack(byte solenoidNumber, byte numSlots, byte flags = 0);
 boolean SolenoidStackEnabled = true;
 volatile byte CurrentSolenoidByte = 0xFF;
 volatile byte RevertSolenoidBit = 0x00;
@@ -1653,58 +1693,127 @@ int SpaceLeftOnSolenoidStack() {
   return (SolenoidStackFirst - SolenoidStackLast) - 1;
 }
 
+// Appends one pulse entry.  Caller holds interrupts off and has checked the space.
+static void AppendToSolenoidStack(byte entry, byte slots) {
+  SolenoidStack[SolenoidStackLast] = entry;
+  SolenoidStackSlots[SolenoidStackLast] = slots;
+  byte next = SolenoidStackLast + 1;
+  if (next == SOLENOID_STACK_SIZE) next = 0;
+  SolenoidStackLast = next;   // publish last: the entry is complete before it is visible
+}
 
+// numSlots consecutive slots of the coil, as ONE entry (callers that used to push N
+// one-slot entries get the same on-time).  A full FIFO drops the pulse, as before.
 void RPU_PushToSolenoidStack(byte solenoidNumber, byte numPushes, boolean disableOverride) {
   if (solenoidNumber >= RPU_NUM_SOLENOIDS) return;
 
   // if the solenoid stack is disabled and this isn't an override push, then return
   if (!disableOverride && !SolenoidStackEnabled) return;
 
-  // If the solenoid stack last index is out of range, then it's an error - return
-  if (SpaceLeftOnSolenoidStack() == 0) return;
-
 #if (RPU_OS_HARDWARE_REV==200)
   // For SA LISY, we only need to push once to the stack
   // because the MPU will handle the actual pulse width.
   numPushes = 1; 
 #endif
+  if (numPushes == 0) return;
 
-  for (int count = 0; count < numPushes; count++) {
-    SolenoidStack[SolenoidStackLast] = solenoidNumber;
-
-    SolenoidStackLast += 1;
-    if (SolenoidStackLast == SOLENOID_STACK_SIZE) {
-      // If the end index is off the end, then wrap
-      SolenoidStackLast = 0;
-    }
-    // If the stack is now full, return
-    if (SpaceLeftOnSolenoidStack() == 0) return;
+  // The Timer1 ISR also pushes and pulls: check and write as one step.
+#if (RPU_MPU_ARCHITECTURE==15)
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+    if (SpaceLeftOnSolenoidStack() != 0) AppendToSolenoidStack(solenoidNumber, numPushes);
   }
+#else
+  if (SpaceLeftOnSolenoidStack() != 0) AppendToSolenoidStack(solenoidNumber, numPushes);
+#endif
 }
 
-void PushToFrontOfSolenoidStack(byte solenoidNumber, byte numPushes) {
-  // If the stack is full, return
-  if (SpaceLeftOnSolenoidStack() == 0  || !SolenoidStackEnabled) return;
+// Puts a pulse at the head of the FIFO.  A running pulse is suspended: its remaining
+// slots become the next entry after the new one (so nothing is lost or extended).
+// Returns false when it did not fit (the running pulse is left alone).
+// Called from the Timer1 ISR (interrupts already off).
+boolean PushToFrontOfSolenoidStack(byte solenoidNumber, byte numSlots, byte flags) {
+  if (!SolenoidStackEnabled || numSlots == 0) return false;
+  byte needed = (SolenoidActiveLeft != 0) ? 2 : 1;
+  if (SpaceLeftOnSolenoidStack() < needed) return false;
 
-  for (int count = 0; count < numPushes; count++) {
+  if (SolenoidActiveLeft != 0) {
     if (SolenoidStackFirst == 0) SolenoidStackFirst = SOLENOID_STACK_SIZE - 1;
     else SolenoidStackFirst -= 1;
-    SolenoidStack[SolenoidStackFirst] = solenoidNumber;
-    if (SpaceLeftOnSolenoidStack() == 0) return;
+    SolenoidStack[SolenoidStackFirst] = SolenoidActive;
+    SolenoidStackSlots[SolenoidStackFirst] = SolenoidActiveLeft;
+    SolenoidActive = SOLENOID_STACK_EMPTY;
+    SolenoidActiveLeft = 0;
   }
-
+  if (SolenoidStackFirst == 0) SolenoidStackFirst = SOLENOID_STACK_SIZE - 1;
+  else SolenoidStackFirst -= 1;
+  SolenoidStack[SolenoidStackFirst] = solenoidNumber | flags;
+  SolenoidStackSlots[SolenoidStackFirst] = numSlots;
+  return true;
 }
 
+// Returns the coil to energise for THIS slot (or SOLENOID_STACK_EMPTY for none) and
+// consumes the slot.  Called once per solenoid slot from the Timer1 ISR.
 byte PullFirstFromSolenoidStack() {
-  // If first and last are equal, there's nothing on the stack
-  if (SolenoidStackFirst == SolenoidStackLast) return SOLENOID_STACK_EMPTY;
+  if (SolenoidActiveLeft == 0) {
+    // Start the next pulse.  If first and last are equal, there's nothing on the stack
+    if (SolenoidStackFirst == SolenoidStackLast) return SOLENOID_STACK_EMPTY;
+    SolenoidActive = SolenoidStack[SolenoidStackFirst];
+    SolenoidActiveLeft = SolenoidStackSlots[SolenoidStackFirst];
+    SolenoidStackFirst += 1;
+    if (SolenoidStackFirst >= SOLENOID_STACK_SIZE) SolenoidStackFirst = 0;
+    if (SolenoidActiveLeft == 0) {   // corrupt entry: never energise for 256 slots
+      SolenoidActive = SOLENOID_STACK_EMPTY;
+      return SOLENOID_STACK_EMPTY;
+    }
+    // A queued re-fire has started: a further hit may queue the next one.
+    if ((SolenoidActive & RPU_SOLENOID_ENTRY_REFIRE) && (SolenoidActive & RPU_SOLENOID_ENTRY_COIL) >= RPU_SWITCH_SOLENOID_FIRST) {
+      SwitchSolenoidRefire &= ~(1 << ((SolenoidActive & RPU_SOLENOID_ENTRY_COIL) - RPU_SWITCH_SOLENOID_FIRST));
+    }
+  }
 
-  byte retVal = SolenoidStack[SolenoidStackFirst];
+  byte entry = SolenoidActive;
+  SolenoidActiveLeft -= 1;
+  if (SolenoidActiveLeft == 0) {
+    SolenoidActive = SOLENOID_STACK_EMPTY;
+    // Last slot of a switch-driven pulse: the coil can be hit again, unless a re-fire is queued
+    if ((entry & RPU_SOLENOID_ENTRY_TRACKED) && (entry & RPU_SOLENOID_ENTRY_COIL) >= RPU_SWITCH_SOLENOID_FIRST) {
+      byte bit = 1 << ((entry & RPU_SOLENOID_ENTRY_COIL) - RPU_SWITCH_SOLENOID_FIRST);
+      if (!(SwitchSolenoidRefire & bit)) SwitchSolenoidBusy &= ~bit;
+    }
+  }
+  byte coil = entry & RPU_SOLENOID_ENTRY_COIL;
+  return (coil == RPU_SOLENOID_ENTRY_IDLE) ? SOLENOID_STACK_EMPTY : coil;
+}
 
-  SolenoidStackFirst += 1;
-  if (SolenoidStackFirst >= SOLENOID_STACK_SIZE) SolenoidStackFirst = 0;
+// Switch-driven coil pulse (jet / sling), validated closure.  One pulse per coil at a
+// time: while the coil's pulse is pending or active a further closure is ignored
+// (sling lockout), or, when `refire` is set (jets), queues ONE re-fire behind it after a
+// short off gap.  Called from the Timer1 ISR (interrupts off).
+void PushSwitchSolenoidPulse(byte solenoidNumber, byte holdSlots, boolean refire) {
+  if (holdSlots == 0) return;
+  if (solenoidNumber < RPU_SWITCH_SOLENOID_FIRST || solenoidNumber >= RPU_SWITCH_SOLENOID_FIRST + 8) {
+    PushToFrontOfSolenoidStack(solenoidNumber, holdSlots, 0);
+    return;
+  }
+  byte bit = 1 << (solenoidNumber - RPU_SWITCH_SOLENOID_FIRST);
+  if (!SolenoidStackEnabled) return;
+  if (SwitchSolenoidBusy & bit) {
+    if (refire && !(SwitchSolenoidRefire & bit) && SpaceLeftOnSolenoidStack() >= 2) {
+      SwitchSolenoidRefire |= bit;
+      AppendToSolenoidStack(RPU_SOLENOID_ENTRY_IDLE, RPU_SWITCH_SOLENOID_REFIRE_GAP_SLOTS);
+      AppendToSolenoidStack(solenoidNumber | RPU_SOLENOID_ENTRY_TRACKED | RPU_SOLENOID_ENTRY_REFIRE, holdSlots);
+    }
+    return;
+  }
+  if (PushToFrontOfSolenoidStack(solenoidNumber, holdSlots, RPU_SOLENOID_ENTRY_TRACKED)) SwitchSolenoidBusy |= bit;
+}
 
-  return retVal;
+// First-closure probe for a switch-driven coil: one slot at the head of the FIFO, only
+// when the coil is not already pending/active.  Called from the Timer1 ISR.
+void PushSwitchSolenoidProbe(byte solenoidNumber) {
+  if (solenoidNumber >= RPU_SWITCH_SOLENOID_FIRST && solenoidNumber < RPU_SWITCH_SOLENOID_FIRST + 8 &&
+      (SwitchSolenoidBusy & (1 << (solenoidNumber - RPU_SWITCH_SOLENOID_FIRST)))) return;
+  PushToFrontOfSolenoidStack(solenoidNumber, 1, 0);
 }
 
 boolean RPU_PushToTimedSolenoidStack(byte solenoidNumber, byte numPushes, unsigned long whenToFire, boolean disableOverride) {
@@ -1838,6 +1947,11 @@ boolean RPU_GetDisableFlippers(byte solbit) {
 // RPU_MPU_ARCHITECTURE >= 10
 void RPU_SetContinuousSolenoid(boolean solOn, byte solNum) {
   unsigned short oldCont = ContinuousSolenoidBits;
+  // ContinuousSolenoidBits is 16 bits wide (library index 0-15).  The legacy
+  // RPU_SetCoinLockout() default passes the bit MASK 0x20 as the index: 1 << 32 is
+  // undefined; the AVR happens to evaluate it to 0 (no-op) but a 32-bit host
+  // wraps it to bit 0, which is SOL1 (the outhole kicker) on the System 11C latch.
+  if (solNum >= 16) return;
 #if (RPU_MPU_ARCHITECTURE==15)
   // 16-bit read-modify-write shared with the Timer1 ISR
   ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
@@ -2565,6 +2679,10 @@ void RPU_ClearVariables() {
   // Reset solenoid stack
   SolenoidStackFirst = 0;
   SolenoidStackLast = 0;
+  SolenoidActive = SOLENOID_STACK_EMPTY;
+  SolenoidActiveLeft = 0;
+  SwitchSolenoidBusy = 0;
+  SwitchSolenoidRefire = 0;
 
   // Reset switch stack
   SwitchStackFirst = 0;
@@ -4144,7 +4262,7 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
           for (byte immediateTrigger = 0; immediateTrigger < NumGamePrioritySwitches; immediateTrigger++) {
             byte triggerSwitch = RPU_GAME_SWITCH_FIELD(immediateTrigger, switchNum);
             if ((triggerSwitch / 8) == switchCol && (startingClosures & (0x01 << (triggerSwitch % 8)))) {
-              PushToFrontOfSolenoidStack(RPU_GAME_SWITCH_FIELD(immediateTrigger, solenoid), 1);
+              PushSwitchSolenoidProbe(RPU_GAME_SWITCH_FIELD(immediateTrigger, solenoid));
             }
           }
         }
@@ -4158,10 +4276,14 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
           for (byte immediateTrigger = 0; immediateTrigger < NumGameSwitches; immediateTrigger++) {
             byte triggerSwitch = RPU_GAME_SWITCH_FIELD(immediateTrigger, switchNum);
             if ((triggerSwitch / 8) == switchCol && (validClosures & (0x01 << (triggerSwitch % 8)))) {
+              // solenoidHoldTime: bits 0-6 = pulse slots after the probe slot, bit 7 = re-fire
+              // while the coil is still pulsing (jets); without it a closure during the
+              // pulse is ignored (slingshot lockout).
+              byte holdField = RPU_GAME_SWITCH_FIELD(immediateTrigger, solenoidHoldTime);
               if (immediateTrigger < NumGamePrioritySwitches) {
-                PushToFrontOfSolenoidStack(RPU_GAME_SWITCH_FIELD(immediateTrigger, solenoid), RPU_GAME_SWITCH_FIELD(immediateTrigger, solenoidHoldTime));
+                PushSwitchSolenoidPulse(RPU_GAME_SWITCH_FIELD(immediateTrigger, solenoid), holdField & RPU_SWITCH_SOLENOID_HOLD_MASK, (holdField & RPU_SWITCH_SOLENOID_REFIRE) ? true : false);
               } else {
-                RPU_PushToSolenoidStack(RPU_GAME_SWITCH_FIELD(immediateTrigger, solenoid), RPU_GAME_SWITCH_FIELD(immediateTrigger, solenoidHoldTime));
+                RPU_PushToSolenoidStack(RPU_GAME_SWITCH_FIELD(immediateTrigger, solenoid), holdField & RPU_SWITCH_SOLENOID_HOLD_MASK);
               }
             }
           }
