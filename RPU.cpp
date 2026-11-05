@@ -1397,8 +1397,9 @@ unsigned long RPU_TestPIAs() {
 
 #else
 
-// RPU_MPU_ARCHITECTURE >= 10
-void RPU_InitializePIAs() {
+// Display PIA (U51 $2800-$2803).  Its port A bit 2 (PA2) also retriggers the U43 555 that drives BLANKING, the enable of
+// every solenoid driver on System 11C (patch 0012).
+static void RPU_InitializeDisplayPIA() {
   RPU_DataWrite(PIA_DISPLAY_CONTROL_A, 0x31);
 #if RPU_OS_HAS_RAW_ALPHA_FRAME
   // Diner stock $D51B configures U51 PA7 as an input (W7), PA0..6 outputs.
@@ -1421,7 +1422,19 @@ void RPU_InitializePIAs() {
 #else
   RPU_DataWrite(PIA_DISPLAY_PORT_B, 0x00);
 #endif
+}
 
+// RPU_MPU_ARCHITECTURE >= 10
+void RPU_InitializePIAs() {
+#if (RPU_MPU_ARCHITECTURE!=15)
+  RPU_InitializeDisplayPIA();
+#else
+  // System 11C (patch 0012): the display PIA goes LAST.  After an AVR-only reset (watchdog, brown-out, reset button) the
+  // board's PIAs and the U28 latch are not reset and keep their last state; with the display PIA's CRA still 0x3D the
+  // first display write ($2800 = 0x70) can change PA2 and retrigger BLANKING while U28 ($2200), PIA0 port B ($2102) and
+  // the special-solenoid CA2/CB2 lines still hold the requests of the interrupted game.  Every solenoid output is now
+  // written off first; the set of writes and their values are unchanged, only their order.
+#endif
   RPU_DataWrite(PIA_SWITCH_CONTROL_A, 0x38);
   RPU_DataWrite(PIA_SWITCH_PORT_A, 0x00);
   RPU_DataWrite(PIA_SWITCH_CONTROL_A, 0x3C);
@@ -1511,6 +1524,9 @@ void RPU_InitializePIAs() {
   RPU_DataWrite(PIA_SOUND_COMMA_PORT_B, 0x00);
 #endif
 
+#if (RPU_MPU_ARCHITECTURE==15)
+  RPU_InitializeDisplayPIA();
+#endif
 }
 
 // RPU_MPU_ARCHITECTURE >= 10
