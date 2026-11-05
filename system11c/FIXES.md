@@ -49,7 +49,7 @@ outputs and PA7 an input.
   table and ignores a null string, credit and ball displays ignore negative numbers, `CheckSwitchStack` cannot loop
   forever on a corrupt index, `RPU_ClearVariables` clears the raw frame and the display state, the constant tables
   live in flash (`RPU_OS_PROGMEM`) to save SRAM.
-* Enabled only for `RPU_OS_USE_DINER_ALPHA_SCAN`, Rev 102, architecture 15, 6802 mode, 7 digits, ATmega2560.
+* Enabled only for `RPU_OS_USE_S11C_ALPHA_SCAN`, Rev 102, architecture 15, 6802 mode, 7 digits, ATmega2560.
   Every other build keeps the original scan.
 
 **Without it.** The alpha displays are not driven the way the stock board drives them, and PA7 is driven against whatever the
@@ -74,7 +74,7 @@ not observable without a sanitizer.
 **Problem.** Upstream ships `RPU_Config.h` for Rev 3 / architecture 1 / 6800.
 
 **What changed.** `RPU_OS_HARDWARE_REV 102`, `RPU_MPU_ARCHITECTURE 15`, `RPU_MPU_BUILD_FOR_6800 0` (the Mega
-generates E), `RPU_OS_USE_WTYPE_11_SOUND`, `RPU_OS_USE_DINER_ALPHA_SCAN 1`; `RPU_OS_USE_WAV_TRIGGER_1p3` removed;
+generates E), `RPU_OS_USE_WTYPE_11_SOUND`, `RPU_OS_USE_S11C_ALPHA_SCAN 1`; `RPU_OS_USE_WAV_TRIGGER_1p3` removed;
 trailing whitespace trimmed. (Both lines of the diff that look like noise are the whitespace.)
 
 **Without it.** The library builds for a different board.

@@ -1414,7 +1414,7 @@ unsigned long RPU_TestPIAs() {
 static void RPU_InitializeDisplayPIA() {
   RPU_DataWrite(PIA_DISPLAY_CONTROL_A, 0x31);
 #if RPU_OS_HAS_RAW_ALPHA_FRAME
-  // Diner stock $D51B configures U51 PA7 as an input (W7), PA0..6 outputs.
+  // The stock Diner ROM ($D51B) configures U51 PA7 as an input (W7), PA0..6 outputs.
   RPU_DataWrite(PIA_DISPLAY_PORT_A, 0x7F);
 #else
   RPU_DataWrite(PIA_DISPLAY_PORT_A, 0xFF);
@@ -4176,12 +4176,12 @@ boolean CheckSwitchStack(byte switchNum) {
 
 #if (RPU_MPU_ARCHITECTURE==15)
 #if RPU_OS_HAS_RAW_ALPHA_FRAME
-static uint16_t RPU_DinerAlphaGlyph(byte index) {
+static uint16_t RPU_S11CAlphaGlyph(byte index) {
   if (index >= sizeof(FourteenSegmentASCII) / sizeof(FourteenSegmentASCII[0])) return 0;
   return RPU_OS_READ_ISR_ROM_WORD_NEAR(FourteenSegmentASCII, index);
 }
 #else
-static uint16_t RPU_DinerAlphaGlyph(byte index) {
+static uint16_t RPU_S11CAlphaGlyph(byte index) {
   return RPU_OS_READ_ISR_ROM_WORD_NEAR(FourteenSegmentASCII, index);
 }
 #endif
@@ -4239,13 +4239,13 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
     if (DisplayBIPDigitEnable & blankingBit) digit1 = DisplayBIPDigits[0];
     if (DisplayCreditDigitEnable & blankingBit) digit2 = DisplayCreditDigits[0];
   } else if (DisplayStrobe < 8) {
-    if (DisplayDigitEnable[0]&blankingBit) digit1 = RPU_DinerAlphaGlyph(DisplayText[0][DisplayStrobe - 1]);
+    if (DisplayDigitEnable[0]&blankingBit) digit1 = RPU_S11CAlphaGlyph(DisplayText[0][DisplayStrobe - 1]);
     if (DisplayDigitEnable[2]&blankingBit) digit2 = DisplayDigits[2][DisplayStrobe - 1];
   } else if (DisplayStrobe == 8) {
     if (DisplayBIPDigitEnable & blankingBit) digit1 = DisplayBIPDigits[1];
     if (DisplayCreditDigitEnable & blankingBit) digit2 = DisplayCreditDigits[1];
   } else {
-    if (DisplayDigitEnable[1]&blankingBit) digit1 = RPU_DinerAlphaGlyph(DisplayText[1][DisplayStrobe - 9]);
+    if (DisplayDigitEnable[1]&blankingBit) digit1 = RPU_S11CAlphaGlyph(DisplayText[1][DisplayStrobe - 9]);
     if (DisplayDigitEnable[3]&blankingBit) digit2 = DisplayDigits[3][DisplayStrobe - 9];
   }
 #if RPU_OS_HAS_RAW_ALPHA_FRAME

@@ -1,10 +1,11 @@
-# RPU for Williams System 11C (local fork)
+# RPU for Williams System 11C
 
-This is a private fork of the RPU library for one machine: a Williams System 11C pinball
-(Diner) with an RPU Rev 102 in the CPU socket. It is the owner's own working copy.
+This is a public fork of the RPU library, carrying fixes for Williams System 11C boards with an
+RPU Rev 102 in the CPU socket. The machine it was developed on is a Diner, but the library
+changes here are for the board, not that game. Game code is not part of this fork.
 
-**This fork is not intended for upstream.** It is not a proposal, nothing here is written for
-anyone else to accept, and it will not be offered. It is shared, if at all, as-is: read it, copy
+**This fork is not intended for upstream.** It is not a proposal, and nothing here is written for
+anyone else to accept. It is shared as-is: read it, copy
 what is useful, run it at your own risk.
 
 > **Safety.** This code drives real 50 V solenoid coils. The only supervision the board gives the
@@ -46,7 +47,7 @@ has not been adapted or tried for System 11C.
 2. Put the four files in the sketch folder (or an Arduino library folder):
    `RPU.cpp`, `RPU.h`, `RPU_Config.h`, `RPU_AlphaScan.h`.
 3. Leave `RPU_Config.h` as it is. It sets Rev 102, architecture 15 (System 11), 6802/6808 mode (the
-   Mega makes E), the W-type 11 sound path, and `RPU_OS_USE_DINER_ALPHA_SCAN 1` (the raw alpha scan,
+   Mega makes E), the W-type 11 sound path, and `RPU_OS_USE_S11C_ALPHA_SCAN 1` (the raw alpha scan,
    used only on this exact combination, and only for a 7-digit ATmega2560 build).
 4. `RPU.h` does not declare the functions added by this fork. Declare them in the sketch:
 

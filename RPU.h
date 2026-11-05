@@ -48,7 +48,7 @@
 #endif
 
 // Supported/tested target only; all other configurations retain the old scan.
-#if defined(RPU_OS_USE_DINER_ALPHA_SCAN) && RPU_OS_USE_DINER_ALPHA_SCAN && \
+#if defined(RPU_OS_USE_S11C_ALPHA_SCAN) && RPU_OS_USE_S11C_ALPHA_SCAN && \
     RPU_OS_HARDWARE_REV == 102 && RPU_MPU_ARCHITECTURE == 15 && \
     defined(RPU_MPU_BUILD_FOR_6800) && RPU_MPU_BUILD_FOR_6800 == 0 && \
     RPU_OS_NUM_DIGITS == 7 && defined(__AVR_ATmega2560__)
