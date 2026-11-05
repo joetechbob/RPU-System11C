@@ -1075,6 +1075,13 @@ byte RPU_DataRead(int address) {
 #define RPU_PINS_OUTPUT       true
 #define RPU_PINS_INPUT        false
 
+// E timing in 6802 mode (the Mega generates E): one pulse per transaction, parked low between
+// transactions. A write latches on the falling edge; a read samples PINA just before it.
+// RPU_E_WAIT_2 is 2 cycles in one word. (A plain nop is 0x0000, which avr-objdump elides as "...".)
+#define RPU_E_WAIT_2 __asm__ __volatile__("rjmp .+0")
+#define RPU_E_WAIT_6 RPU_E_WAIT_2; RPU_E_WAIT_2; RPU_E_WAIT_2
+#define RPU_E_WAIT_8 RPU_E_WAIT_6; RPU_E_WAIT_2
+
 // REVISION 101/102 HARDWARE
 void RPU_SetAddressPinsDirection(boolean pinsOutput) {
   for (int count = 0; count < 16; count++) {
@@ -1138,14 +1145,12 @@ void RPU_DataWrite(int address, byte data) {
     // Wait while clock is low
     while (!(PING & 0x04));
   } else {
-    // Set clock high
+    // Set clock high for 500 ns, as the stock 1 MHz E
     PORTG |= 0x04;
+    RPU_E_WAIT_6;
 
-    // Set clock low
+    // Set clock low: the PIA or latch takes the data here
     PORTG &= ~0x04;
-
-    // Set clock high
-    PORTG |= 0x04;
   }
 
   // Set VMA OFF
@@ -1208,18 +1213,16 @@ byte RPU_DataRead(int address) {
     // Wait while clock is low
     while (!(PING & 0x04));
   } else {
-    // Set clock high
+    // Set clock high; the PIA has up to 290 ns to drive the data
     PORTG |= 0x04;
-
-    // Set clock low
-    PORTG &= ~0x04;
-
-    // Set clock high
-    PORTG |= 0x04;
+    RPU_E_WAIT_8;
   }
 
   byte inputData;
   inputData = PINA;
+
+  // Set clock low (6802 mode only: an external E is not ours to drive)
+  if (!UsesM6800Processor) PORTG &= ~0x04;
 
   // Set VMA OFF
   PORTG = PORTG & 0xFD;
