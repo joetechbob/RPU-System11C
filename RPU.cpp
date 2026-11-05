@@ -233,7 +233,11 @@ struct TimedSolenoidEntry {
 };
 TimedSolenoidEntry TimedSolenoidStack[TIMED_SOLENOID_STACK_SIZE] = {0, 0, 0, 0, 0};
 
-#define SWITCH_STACK_SIZE   60
+// Sized from measured high-water marks (PinMAME drain_ball1 / events_mix /
+// game_over / ball_search and a scripted multi-ball game): the switch stack
+// never held more than 1 entry because the foreground drains it every step; 24
+// is more than 20x that. Reducing it from 60 returns 36 bytes of SRAM.
+#define SWITCH_STACK_SIZE   24
 #define SWITCH_STACK_EMPTY  0xFF
 volatile byte SwitchStackFirst;
 volatile byte SwitchStackLast;
@@ -248,7 +252,10 @@ volatile byte SwitchStack[SWITCH_STACK_SIZE];
 // MPU Architecture > 9
 #if (RPU_MPU_ARCHITECTURE >= 10)
 
-#define SOUND_STACK_SIZE  64
+// WTYPE_11 (and this port) plays sounds synchronously through the widget PIA, so
+// nothing is ever pushed here (measured peak 0). 16 entries keep the queue
+// usable for the stack-based sound types and return 96 bytes of SRAM.
+#define SOUND_STACK_SIZE  16
 #define SOUND_STACK_EMPTY 0x0000
 volatile byte SoundStackFirst;
 volatile byte SoundStackLast;
