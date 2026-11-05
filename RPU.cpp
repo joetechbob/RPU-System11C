@@ -2908,6 +2908,36 @@ void RPU_UpdateTimedSoundStack(unsigned long curTime) {
 #endif
 
 #ifdef RPU_OS_USE_WTYPE_11_SOUND
+#if (RPU_MPU_ARCHITECTURE==15)
+// System 11C: the only sound hardware is the external sound board (D-11581),
+// fed through the widget PIA: command byte on port B ($3402), command strobe on
+// CB2 ($3403: CRB 0x34 = CB2 low, 0x3C = CB2 high; idle high).  The sound board
+// latches the command on the CB2 edge.  Effects and music use the same path.
+// The board takes one command per CB2 edge and the next data byte overwrites the
+// latch, so consecutive commands must be spaced: after the strobe wait
+// RPU_S11C_SOUND_COMMAND_GAP_US (foreground only; Timer1 keeps running).  Two commands
+// issued back to back (11 us apart) lose the second one: measured in PinMAME with the
+// S11C sound board (events_mix, pairs 00+56 and 0A+7D: 100 us still loses it, 300 us
+// delivers both).  Default 1000 us = 3x that, about one Timer1 tick.
+#ifndef RPU_S11C_SOUND_COMMAND_GAP_US
+#define RPU_S11C_SOUND_COMMAND_GAP_US   1000
+#endif
+static void S11CSoundBoardCommand(byte command) {
+  RPU_DataWrite(PIA_WIDGET_PORT_B, command);
+  // Strobe CB2 (low, then back to the idle high level)
+  RPU_DataWrite(PIA_WIDGET_CONTROL_B, 0x34);
+  RPU_DataWrite(PIA_WIDGET_CONTROL_B, 0x3C);
+  delayMicroseconds(RPU_S11C_SOUND_COMMAND_GAP_US);
+}
+
+void RPU_PlayW11Sound(byte soundNum) {
+  S11CSoundBoardCommand(soundNum);
+}
+
+void RPU_PlayW11Music(byte songNum) {
+  S11CSoundBoardCommand(songNum);
+}
+#else
 void RPU_PlayW11Sound(byte soundNum) {
   RPU_DataWrite(PIA_SOUND_11_PORT_A, soundNum);
   // Strobe CA2
@@ -2921,6 +2951,7 @@ void RPU_PlayW11Music(byte songNum) {
   RPU_DataWrite(PIA_WIDGET_CONTROL_B, 0x34);
   RPU_DataWrite(PIA_WIDGET_CONTROL_B, 0x3C);
 }
+#endif
 #endif
 
 
