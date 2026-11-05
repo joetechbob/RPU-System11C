@@ -239,6 +239,8 @@ byte DipSwitches[4];
 // sols 1-16) is OR-ed into the same $2200/$2102 write and may overlap any entry, so
 // a long pull plus a timed hold needs no entries at all.
 #if (RPU_MPU_ARCHITECTURE==15)
+// One entry is a whole pulse, so the depth only has to cover distinct pending coils
+// (the old one-slot-per-entry FIFO needed 150).
 #define SOLENOID_STACK_SIZE 32
 #elif (RPU_OS_HARDWARE_REV>2)
 #define SOLENOID_STACK_SIZE 150
@@ -1077,6 +1079,10 @@ byte RPU_DataRead(int address) {
 
 // E timing in 6802 mode (the Mega generates E): one pulse per transaction, parked low between
 // transactions. A write latches on the falling edge; a read samples PINA just before it.
+// Why: the MC6821 needs E high for at least 450 ns and drives read data up to 290 ns after E
+// rises, and the System 11C board only buffers E (U11) to every PIA pin 25, so the pulse the
+// Mega makes is the pulse the PIAs and the U28 latch strobe see.  The stock 6808 E is 1 MHz:
+// 500 ns high.  The upstream sequence was two 125 ns pulses with E left high.
 // RPU_E_WAIT_2 is 2 cycles in one word. (A plain nop is 0x0000, which avr-objdump elides as "...".)
 #define RPU_E_WAIT_2 __asm__ __volatile__("rjmp .+0")
 #define RPU_E_WAIT_6 RPU_E_WAIT_2; RPU_E_WAIT_2; RPU_E_WAIT_2
@@ -1145,7 +1151,8 @@ void RPU_DataWrite(int address, byte data) {
     // Wait while clock is low
     while (!(PING & 0x04));
   } else {
-    // Set clock high for 500 ns, as the stock 1 MHz E
+    // Set clock high for 500 ns, as the stock 1 MHz E (MC6821 minimum is 450 ns): 8 cycles
+    // from the sbi taking effect to the cbi taking effect (6 waits + the 2-cycle cbi)
     PORTG |= 0x04;
     RPU_E_WAIT_6;
 
@@ -1213,7 +1220,8 @@ byte RPU_DataRead(int address) {
     // Wait while clock is low
     while (!(PING & 0x04));
   } else {
-    // Set clock high; the PIA has up to 290 ns to drive the data
+    // Set clock high; the PIA has up to 290 ns to drive the data, so wait 8 cycles (500 ns)
+    // plus the jump back to the sample: the data is read about 600 ns after E rises
     PORTG |= 0x04;
     RPU_E_WAIT_8;
   }
@@ -1221,7 +1229,8 @@ byte RPU_DataRead(int address) {
   byte inputData;
   inputData = PINA;
 
-  // Set clock low (6802 mode only: an external E is not ours to drive)
+  // Set clock low (6802 mode only: an external E is not ours to drive).  E stays low until
+  // the next transaction: every PIA sees the E net, so a stray high level is a stray access.
   if (!UsesM6800Processor) PORTG &= ~0x04;
 
   // Set VMA OFF
@@ -1481,6 +1490,8 @@ void RPU_InitializePIAs() {
   RPU_DataWrite(PIA_ALPHA_DISPLAY_PORT_A, 0xFF);
   RPU_DataWrite(PIA_ALPHA_DISPLAY_CONTROL_A, 0x3C);
 #if RPU_OS_HAS_RAW_ALPHA_FRAME
+  // Raw scan: the segment data is inverted (a segment is on when its bit is 0), so the idle
+  // level of the alpha and numeric ports is 0xFF, all segments off.
   RPU_DataWrite(PIA_ALPHA_DISPLAY_PORT_A, 0xFF);
 #else
   RPU_DataWrite(PIA_ALPHA_DISPLAY_PORT_A, 0x00);
@@ -1999,6 +2010,7 @@ void RPU_SetDisableFlippers(boolean disableFlippers, byte solbit) {
   RPU_LISYSendGameOverState(disableFlippers);
 #else
 #if (RPU_MPU_ARCHITECTURE==15)
+  // GameOn is PIA0 CB2, low = on.  $2203 is not a PIA: a write there strobes the SOL1-8 latch.
   RPU_DataWrite(PIA_SOLENOID_11_CONTROL_B, disableFlippers ? S11C_GAMEON_DISABLED_CRB : S11C_GAMEON_ENABLED_CRB);
 #else
   if (disableFlippers) RPU_DataWrite(PIA_SOLENOID_CONTROL_B, 0x34);
@@ -2109,6 +2121,7 @@ void RPU_SetCoinLockout(boolean lockoutOn, byte solNum) {
 void RPU_DisableSolenoidStack() {
   SolenoidStackEnabled = false;
 #if (RPU_MPU_ARCHITECTURE==15)
+  // Drop GameOn (CB2 high): with the stack disabled nothing may be left able to fire a coil.
   RPU_DataWrite(PIA_SOLENOID_11_CONTROL_B, S11C_GAMEON_DISABLED_CRB);
 #else
   RPU_DataWrite(PIA_SOLENOID_CONTROL_B, 0x34);
@@ -2498,6 +2511,7 @@ byte RPU_SetDisplayText(int displayNumber, char *text, boolean blankByLength) {
 #endif
     if (!writeSpace) {
 #if RPU_OS_HAS_RAW_ALPHA_FRAME
+      // Keep the font index inside the 96-entry table the display ISR reads (printable ASCII only)
       const byte ascii = (byte)text[stringLength];
       DisplayText[displayNumber][stringLength] = (ascii >= 0x20 && ascii < 0x80) ? ascii - 0x20 : 0;
 #else
@@ -2779,6 +2793,8 @@ void RPU_ApplyLampsOffOverlay() {
 
 void RPU_ClearVariables() {
 #if RPU_OS_HAS_RAW_ALPHA_FRAME
+  // Start with no raw frame claimed and every text/credit/ball display empty: nothing from an
+  // earlier init may stay on the displays.
   RPU_ResetAlphaRawFrame();
   for (byte row = 0; row < 2; ++row) {
     for (byte col = 0; col < RPU_OS_NUM_DIGITS; ++col) DisplayText[row][col] = 0;
@@ -4459,6 +4475,7 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
         portB |= (newSolenoidBytes / 256);
         if (NeedToTurnOffTriggeredSolenoids) {
 #if (RPU_MPU_ARCHITECTURE==15)
+          // An ordinary coil takes the slot: release every special line (CRx 0x3C = CA2/CB2 high = off)
           for (byte ss = 0; ss < S11C_SPECIAL_SOL_COUNT; ss++) RPU_DataWrite(S11CSpecialSolenoidControl(ss), S11C_SPECIAL_SOL_OFF_CR);
           SpecialActive = 0xFF;
 #else
@@ -4496,6 +4513,7 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
     } else if (NeedToTurnOffTriggeredSolenoids) {
       NeedToTurnOffTriggeredSolenoids = false;
 #if (RPU_MPU_ARCHITECTURE==15)
+      // Empty slot: release every special line
       for (byte ss = 0; ss < S11C_SPECIAL_SOL_COUNT; ss++) RPU_DataWrite(S11CSpecialSolenoidControl(ss), S11C_SPECIAL_SOL_OFF_CR);
       SpecialActive = 0xFF;
 #else
@@ -4526,6 +4544,9 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
     }
 #endif
 
+    // SOL1-8 go to the U28 latch at $2200 (offset 0 only: the latch ignores A1:A0, see the
+    // PIA_SOLENOID_CONTROL_A poison above), SOL9-16 to PIA0 port B.  Written every pass, so a
+    // dropped request is cleared within one slot.
     RPU_DataWrite(PIA_SOLENOID_PORT_A, portA);
 #if (RPU_MPU_ARCHITECTURE==15)
     RPU_DataWrite(PIA_SOLENOID_11_PORT_B, portB);
@@ -4652,6 +4673,8 @@ unsigned long RPU_InitializeMPUArch10(unsigned long initOptions, byte creditRese
   // Make sure PIA IV (solenoid) CB2 is off so that solenoids are off
   RPU_SetAddressPinsDirection(RPU_PINS_OUTPUT);
 #if (RPU_MPU_ARCHITECTURE==15)
+  // GameOn off first: PIA0 CB2 high (0x38 also selects the data direction register, as the
+  // stock ROM does at boot).  The legacy $2203 write would strobe the SOL1-8 latch instead.
   RPU_DataWrite(PIA_SOLENOID_11_CONTROL_B, S11C_GAMEON_DISABLED_DDR_CRB);
 #else
   RPU_DataWrite(PIA_SOLENOID_CONTROL_B, 0x30);

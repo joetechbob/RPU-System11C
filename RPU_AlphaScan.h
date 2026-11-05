@@ -1,6 +1,11 @@
 #ifndef RPU_ALPHA_SCAN_H
 #define RPU_ALPHA_SCAN_H
 #include <stdint.h>
+// System 11C raw alpha display scan.  The LA-4 alpha displays are driven by the stock ROM with
+// a four-byte, two-row sequence per strobe (upper row words on $2C00/$2C02, lower row words on
+// $2802/$3400, strobe and shadow bits on $2800), with the segment data inverted (a segment is on
+// when its bit is 0).  The library's own scan does not use that sequence, so RPU_SetAlphaRawFrame()
+// hands the library finished words and the display ISR replays the stock sequence.
 namespace RPUAlpha {
 // Storage is owned by foreground callers and the non-nested display ISR only.
 // Foreground must serialize calls; reserve/publish/cancel need atomic sections.

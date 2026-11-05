@@ -24,6 +24,9 @@
 #define RPU_OS_MAJOR_VERSION  5
 #define RPU_OS_MINOR_VERSION  16
 
+// Constant tables (lamp bit masks, 7-segment and 14-segment fonts, display blanking) live in flash
+// on the AVR to save SRAM.  The ISR reads some of them with a 16-bit (near) address, so they must
+// stay below 64 KiB of flash.  On other targets these macros are plain array reads.
 #if defined(__AVR__)
 #include <avr/pgmspace.h>
 #define RPU_OS_PROGMEM PROGMEM

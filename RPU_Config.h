@@ -25,6 +25,11 @@
   Use this file to set game-specific and hardware-specific parameters
 
 ***/
+// System 11C fork (branch system11c): this copy is set up for a Williams System 11C CPU board
+// with an RPU Rev 102 in the CPU socket.  Rev 102 and architecture 15 select the System 11 code,
+// RPU_MPU_BUILD_FOR_6800 0 makes the Mega generate E (6802/6808 socket), RPU_OS_USE_WTYPE_11_SOUND
+// sends sound to the external sound board through the widget PIA, and RPU_OS_USE_DINER_ALPHA_SCAN
+// selects the raw two-row alpha display scan.  See system11c/README.md and system11c/FIXES.md.
 // Plug-in board architectures (0-99 is for J5, 100-199 is for CPU socket)
 // Hardware Rev 1 generally uses an Arduino Nano & (optional) 74125
 // Hardware Rev 2 uses an Arduino Nano, a 74155, and a 74240
