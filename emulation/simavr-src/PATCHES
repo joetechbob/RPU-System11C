@@ -1,0 +1,23 @@
+Local patches to the simavr copy (upstream commit 14e88fa)
+==========================================================
+
+1. Interrupt flag latching (sim/sim_interrupts.c, sim/sim_interrupts.h,
+   sim/sim_avr.c avr_init)
+   Stock simavr only queues a vector when the event happens while its enable
+   bit is set. A flag raised while the enable bit is clear (Timer1 OCF1A with
+   OCIE1A=0) is set in TIFR but dropped, so setting the enable bit later never
+   fires it. Real AVRs request an interrupt whenever flag && enable, so the
+   interrupt fires right after the enable bit is set. The patch wraps writes to
+   every interrupt-enable register (all vectors with a flag register: Timer0-5
+   compare/overflow/capture, external, ...) and queues vectors whose flag is
+   already set. Disable with avr_interrupt_enable_latch_disabled = 1
+   (engine config legacy_simavr_irq_drop) to get stock behaviour.
+   Needed because the S11C interface fixes mask OCIE1A around bus accesses.
+
+2. Cycle counter restart before the peripheral resets (sim/sim_avr.c avr_reset), Diner batch j
+   avr_reset zeroed avr->cycle only after every peripheral's reset hook ran.  The watchdog's hook arms
+   the post-reset timeout (WDRF set -> WDE with the 16 ms prescaler, as the ATmega2560 does) as an
+   absolute cycle time computed from the pre-reset counter, so after the zeroing it fired only after the
+   whole pre-reset run time again (seconds instead of 16 ms), and a firmware that never clears WDRF did
+   not boot-loop as the part does.  The counter is now zeroed right after avr_cycle_timer_reset.  The
+   engine (rpu_avr_engine.c) keeps its own time monotonic across such in-run resets.

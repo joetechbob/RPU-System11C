@@ -163,3 +163,8 @@ After the rebase:
   the schematic, and what is a guess.
 * No hardware watchdog: if Timer1 stops, the coil drivers keep their last state (fixes 0009-0011 cannot
   act without the ISR).
+
+## Emulator
+
+`emulation/` holds a Mega emulator that runs a compiled firmware image against a pin-level model
+of the Rev 102 board. See `emulation/README.md`.
