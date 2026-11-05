@@ -350,6 +350,30 @@ TimedSoundEntry TimedSoundStack[TIMED_SOUND_STACK_SIZE] = {0, 0, 0, 0};
 #define S11C_GAMEON_ENABLED_CRB         0x34
 #define S11C_GAMEON_DISABLED_CRB        0x3C
 #define S11C_GAMEON_DISABLED_DDR_CRB    0x38
+// System 11C special solenoids 17-22 (library index 16-21) are the CA2/CB2
+// outputs of PIA1/PIA3/PIA4.  CRx 0x34 = line LOW = solenoid driver on,
+// CRx 0x3C = line HIGH = off.  Index order: sol 17..22.
+#define S11C_SPECIAL_SOL_COUNT          6
+#define S11C_SPECIAL_SOL_ON_CR          0x34
+#define S11C_SPECIAL_SOL_OFF_CR         0x3C
+static const unsigned short S11CSpecialSolenoidControlTable[S11C_SPECIAL_SOL_COUNT] PROGMEM = {
+  0x3001, /* sol 17  PIA4 CA2 */
+  0x2C01, /* sol 18  PIA3 CA2 */
+  0x2C03, /* sol 19  PIA3 CB2 */
+  0x3003, /* sol 20  PIA4 CB2 */
+  0x2403, /* sol 21  PIA1 CB2 */
+  0x2401  /* sol 22  PIA1 CA2 */
+};
+#define S11CSpecialSolenoidControl(ss) ((int)pgm_read_word(&S11CSpecialSolenoidControlTable[(ss)]))
+// $2201-$2203 are NOT a PIA on System 11C: $2200 is the write-only U28 SOL1-8
+// latch decoded without A1:A0.  Poison the legacy names so that any use in an
+// arch-15 build fails to compile instead of strobing SOL1-8.
+#undef PIA_SOLENOID_CONTROL_A
+#undef PIA_SOLENOID_PORT_B
+#undef PIA_SOLENOID_CONTROL_B
+#define PIA_SOLENOID_CONTROL_A          S11C_2201_IS_NOT_A_PIA
+#define PIA_SOLENOID_PORT_B             S11C_2202_IS_NOT_A_PIA
+#define PIA_SOLENOID_CONTROL_B          S11C_2203_IS_NOT_A_PIA
 #define PIA_ALPHA_DISPLAY_PORT_A        0x2C00
 #define PIA_ALPHA_DISPLAY_CONTROL_A     0x2C01
 #define PIA_ALPHA_DISPLAY_PORT_B        0x2C02
@@ -1425,14 +1449,17 @@ unsigned long RPU_TestPIAs() {
   piaResult = RPU_DataRead(PIA_LAMPS_CONTROL_B);
   if (piaResult != 0x3C) piaErrors |= RPU_RET_PIA_3_ERROR;
 
+#if (RPU_MPU_ARCHITECTURE==15)
+  // $2200-$2203 is the write-only SOL1-8 latch: nothing there to read back.
+  // The solenoid PIA of System 11C is PIA0 ($2100); check its port-B control.
+  piaResult = RPU_DataRead(PIA_SOLENOID_11_CONTROL_B);
+  if (piaResult != 0x3C) piaErrors |= RPU_RET_PIA_4_ERROR;
+#else
   piaResult = RPU_DataRead(PIA_SOLENOID_CONTROL_A);
   if (piaResult != 0x3C) piaErrors |= RPU_RET_PIA_4_ERROR;
   piaResult = RPU_DataRead(PIA_SOLENOID_CONTROL_B);
-#if (RPU_MPU_ARCHITECTURE<15)
   // RPU_InitializePIAs leaves CB2 (the flipper enable) low, flippers off: $34, not $3C
   if (piaResult != 0x34) piaErrors |= RPU_RET_PIA_4_ERROR;
-#else
-  if (piaResult != 0x3C) piaErrors |= RPU_RET_PIA_4_ERROR;
 #endif
 
 #if (RPU_MPU_ARCHITECTURE==13)
@@ -1774,19 +1801,34 @@ boolean RPU_GetDisableFlippers(byte solbit) {
 // RPU_MPU_ARCHITECTURE >= 10
 void RPU_SetContinuousSolenoid(boolean solOn, byte solNum) {
   unsigned short oldCont = ContinuousSolenoidBits;
+#if (RPU_MPU_ARCHITECTURE==15)
+  // 16-bit read-modify-write shared with the Timer1 ISR
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+    if (solOn) ContinuousSolenoidBits |= (1 << solNum);
+    else ContinuousSolenoidBits &= ~(1 << solNum);
+  }
+#else
   if (solOn) ContinuousSolenoidBits |= (1 << solNum);
   else ContinuousSolenoidBits &= ~(1 << solNum);
+#endif
 
 #if (RPU_OS_HARDWARE_REV==200)
   RPU_LISYSetSolenoid(solOn, solNum);
 #else
 
+#if (RPU_MPU_ARCHITECTURE==15)
+  // System 11C: $2200 is a write-only latch (reads are open bus) and $2202 is
+  // not a PIA.  ContinuousSolenoidBits is the shadow; the Timer1 solenoid pass
+  // (every 2.07 ms) merges it with pending pulses and writes $2200 and $2102.
+  (void)oldCont;
+#else
   if (oldCont != ContinuousSolenoidBits) {
     byte origPortA = RPU_DataRead(PIA_SOLENOID_PORT_A);
     byte origPortB = RPU_DataRead(PIA_SOLENOID_PORT_B);
     if (origPortA != (ContinuousSolenoidBits & 0xFF)) RPU_DataWrite(PIA_SOLENOID_PORT_A, (ContinuousSolenoidBits & 0xFF));
     if (origPortB != (ContinuousSolenoidBits / 256)) RPU_DataWrite(PIA_SOLENOID_PORT_B, (ContinuousSolenoidBits / 256));
   }
+#endif
 #endif  
 }
 
@@ -4034,15 +4076,25 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
         portA |= (newSolenoidBytes & 0xFF);
         portB |= (newSolenoidBytes / 256);
         if (NeedToTurnOffTriggeredSolenoids) {
+#if (RPU_MPU_ARCHITECTURE==15)
+          for (byte ss = 0; ss < S11C_SPECIAL_SOL_COUNT; ss++) RPU_DataWrite(S11CSpecialSolenoidControl(ss), S11C_SPECIAL_SOL_OFF_CR);
+#else
           RPU_DataWrite(PIA_LAMPS_CONTROL_B, 0x3C);
           RPU_DataWrite(PIA_LAMPS_CONTROL_A, 0x3C);
           RPU_DataWrite(PIA_SWITCH_CONTROL_B, 0x3C);
           RPU_DataWrite(PIA_SWITCH_CONTROL_A, 0x3C);
           RPU_DataWrite(PIA_SOLENOID_CONTROL_A, 0x3C);
           RPU_DataWrite(PIA_DISPLAY_CONTROL_B, 0x3D);
+#endif
           NeedToTurnOffTriggeredSolenoids = false;
         }
       } else {
+#if (RPU_MPU_ARCHITECTURE==15)
+        if (solenoidOn < 16 + S11C_SPECIAL_SOL_COUNT) {
+          RPU_DataWrite(S11CSpecialSolenoidControl(solenoidOn - 16), S11C_SPECIAL_SOL_ON_CR);
+          NeedToTurnOffTriggeredSolenoids = true;
+        }
+#else
         if (solenoidOn == 16) RPU_DataWrite(PIA_LAMPS_CONTROL_B, 0x34);
         if (solenoidOn == 17) RPU_DataWrite(PIA_LAMPS_CONTROL_A, 0x34);
         if (solenoidOn == 18) RPU_DataWrite(PIA_SWITCH_CONTROL_B, 0x34);
@@ -4050,15 +4102,20 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
         if (solenoidOn == 20) RPU_DataWrite(PIA_SOLENOID_CONTROL_A, 0x34);
         if (solenoidOn == 21) RPU_DataWrite(PIA_DISPLAY_CONTROL_B, 0x35);
         NeedToTurnOffTriggeredSolenoids = true;
+#endif
       }
     } else if (NeedToTurnOffTriggeredSolenoids) {
       NeedToTurnOffTriggeredSolenoids = false;
+#if (RPU_MPU_ARCHITECTURE==15)
+      for (byte ss = 0; ss < S11C_SPECIAL_SOL_COUNT; ss++) RPU_DataWrite(S11CSpecialSolenoidControl(ss), S11C_SPECIAL_SOL_OFF_CR);
+#else
       RPU_DataWrite(PIA_LAMPS_CONTROL_B, 0x3C);
       RPU_DataWrite(PIA_LAMPS_CONTROL_A, 0x3C);
       RPU_DataWrite(PIA_SWITCH_CONTROL_B, 0x3C);
       RPU_DataWrite(PIA_SWITCH_CONTROL_A, 0x3C);
       RPU_DataWrite(PIA_SOLENOID_CONTROL_A, 0x3C);
       RPU_DataWrite(PIA_DISPLAY_CONTROL_B, 0x3D);
+#endif
     }
 
 
