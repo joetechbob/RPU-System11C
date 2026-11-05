@@ -135,6 +135,16 @@ boolean GameOverLine = true;
 volatile byte BoardLEDs = 0;
 volatile boolean UpDownSwitch = false;
 unsigned short ContinuousSolenoidBits = 0;
+// Hold-PWM (cup diverter): one coil that is driven for HoldPwmOnSlots of every HoldPwmPeriodSlots
+// solenoid slots (2.0718 ms each) by the Timer1 solenoid pass, independent of the loop() rate.
+// It is OR-ed on top of ContinuousSolenoidBits and is not part of it, so a continuous pull and
+// RPU_SetContinuousSolenoid() on other coils do not touch it.  Arch 15 only (the only user).
+volatile unsigned short HoldPwmBit = 0;
+volatile byte HoldPwmOnSlots = 0;
+volatile byte HoldPwmPeriodSlots = 0;
+volatile byte HoldPwmPhase = 0;
+// Slots left before the ISR drops the hold itself (no watchdog): 5300 x 2.0718 ms = 10.98 s.
+volatile unsigned short HoldPwmRemaining = 0;
 
 volatile byte DisplayCreditDigits[2];
 volatile byte DisplayCreditDigitEnable;
@@ -1986,6 +1996,30 @@ void RPU_SetContinuousSolenoid(boolean solOn, byte solNum) {
 // RPU_MPU_ARCHITECTURE >= 10
 byte RPU_ReadContinuousSolenoids() {
   return ContinuousSolenoidBits;
+}
+
+// RPU_MPU_ARCHITECTURE >= 10
+// Starts (onSlots > 0 and periodSlots > onSlots) or stops (onSlots == 0) the hold-PWM on one coil
+// (library index 0-15).  Only one coil can be held at a time; a new call replaces the old one.
+void RPU_SetSolenoidHoldPwm(byte solNum, byte onSlots, byte periodSlots) {
+#if (RPU_MPU_ARCHITECTURE==15)
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+    if (solNum >= 16 || onSlots == 0 || periodSlots <= onSlots) {
+      HoldPwmBit = 0;
+      HoldPwmOnSlots = 0;
+      HoldPwmPeriodSlots = 0;
+      HoldPwmRemaining = 0;
+    } else {
+      HoldPwmOnSlots = onSlots;
+      HoldPwmPeriodSlots = periodSlots;
+      HoldPwmPhase = 0;
+      HoldPwmRemaining = 5300;
+      HoldPwmBit = (unsigned short)1 << solNum;
+    }
+  }
+#else
+  (void)solNum; (void)onSlots; (void)periodSlots;
+#endif
 }
 
 // RPU_MPU_ARCHITECTURE >= 10
@@ -4309,8 +4343,21 @@ ISR(TIMER1_COMPA_vect) {    //This is the interrupt request (running at 965.3 Hz
   } else {
     // See if any solenoids need to be switched
     byte solenoidOn = PullFirstFromSolenoidStack();
-    byte portA = ContinuousSolenoidBits & 0xFF;
-    byte portB = ContinuousSolenoidBits / 256;
+    unsigned short solenoidBits = ContinuousSolenoidBits;
+#if (RPU_MPU_ARCHITECTURE==15)
+    if (HoldPwmBit) {
+      if (HoldPwmRemaining) {
+        HoldPwmRemaining -= 1;
+        if (HoldPwmPhase < HoldPwmOnSlots) solenoidBits |= HoldPwmBit;
+        HoldPwmPhase += 1;
+        if (HoldPwmPhase >= HoldPwmPeriodSlots) HoldPwmPhase = 0;
+      } else {
+        HoldPwmBit = 0;
+      }
+    }
+#endif
+    byte portA = solenoidBits & 0xFF;
+    byte portB = solenoidBits / 256;
     if (solenoidOn != SOLENOID_STACK_EMPTY) {
       if (solenoidOn < 16) {
         unsigned short newSolenoidBytes = (1 << solenoidOn);
