@@ -1019,6 +1019,15 @@ void RPU_SetDataPinsDirection(boolean pinsOutput) {
 // REVISION 101/102 HARDWARE
 void RPU_DataWrite(int address, byte data) {
 
+  // Atomic bus transaction: the Timer1 compare ISR (the only interrupt that
+  // uses the bus) must not preempt a foreground access.  Mask just that
+  // interrupt for the duration of the transaction; a compare match that occurs
+  // meanwhile stays pending (OCF1A) and is taken as soon as TIMSK1 is restored.
+  // (Masking TIMSK1 rather than save/cli/restore SREG keeps the avr_stack_gate
+  // ISR-nesting proof valid: no "out SREG" in code reachable from an ISR.)
+  byte savedTIMSK1 = TIMSK1;
+  TIMSK1 = savedTIMSK1 & (byte)~_BV(OCIE1A);
+
   // Set data pins to output
   DDRA = 0xFF;
 
@@ -1079,10 +1088,15 @@ void RPU_DataWrite(int address, byte data) {
   // Set data pins to input
   DDRA = 0x00;
 
+  TIMSK1 = savedTIMSK1;
 }
 
 // REVISION 101/102 HARDWARE
 byte RPU_DataRead(int address) {
+
+  // Atomic bus transaction (see RPU_DataWrite)
+  byte savedTIMSK1 = TIMSK1;
+  TIMSK1 = savedTIMSK1 & (byte)~_BV(OCIE1A);
 
   // Set data pins to input
   DDRA = 0x00;
@@ -1144,6 +1158,7 @@ byte RPU_DataRead(int address) {
   PORTF = 0x00;
   PORTK = 0x00;
 
+  TIMSK1 = savedTIMSK1;
   return inputData;
 }
 
