@@ -32,8 +32,8 @@
 #include "sim_hex.h"
 #include "sim_vcd_file.h"
 
-#ifdef DINER_RPU_SIMAVR_CORE_DECL_HEADER
-#include DINER_RPU_SIMAVR_CORE_DECL_HEADER
+#ifdef RPU_AVR_SIMAVR_CORE_DECL_HEADER
+#include RPU_AVR_SIMAVR_CORE_DECL_HEADER
 #else
 #include "sim_core_decl.h"
 #endif

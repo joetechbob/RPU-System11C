@@ -97,6 +97,20 @@ static void note_absent() {
 }
 
 // =================================================================================================
+// 0006 / 0007  Queue sizes.  The Mega has 8 KB of SRAM, shared by the game and the call stack, so a
+// queue larger than it needs takes memory from the stack margin.  The capacities are read through
+// the library's own free-space counters on empty queues.
+int SpaceLeftOnSolenoidStack();
+int SpaceLeftOnSwitchStack();
+TEST(queues_fit_the_sram_budget, "0006", "The solenoid and switch queues stay within 96 B of SRAM, and still hold one pulse per coil") {
+  bring_up();
+  int sol = SpaceLeftOnSolenoidStack(), sw = SpaceLeftOnSwitchStack();
+  int bytes = sol * 2 + sw;     // a solenoid entry is a coil byte plus an on-time byte
+  CHECK(bytes <= 96, "queues take %d B of SRAM (solenoid %d, switch %d free entries), budget 96 B", bytes, sol, sw);
+  CHECK(sol >= 22, "solenoid queue holds %d entries, fewer than the 22 coils", sol);
+}
+
+// =================================================================================================
 // 0013  One full-width E pulse per bus transaction (6802 mode)
 // =================================================================================================
 TEST(e_pulse_one_per_write, "0013", "A write gives the PIA exactly one E pulse, not two") {

@@ -1,8 +1,10 @@
 # RPU Mega emulator for System 11C
 
 This runs a compiled RPU firmware image on a simulated ATmega2560 and models the Rev 102 board at
-pin level, so a host such as PinMAME sees the bus a 6802 socket would see. The file and target names
-still say `diner_rpu`, after the machine it was built for; the code itself is not game-specific.
+pin level, so a host such as PinMAME sees the bus a 6802 socket would see.
+
+To use it from another CMake project, include `rpu_avr_engine.cmake`, link the `rpu_avr_engine` target,
+and set `RPU_AVR_ENGINE_NAME` to the name you want in its reports (default `rpu`).
 
 It includes a patched copy of simavr (GPL-3.0); `simavr-src/PATCHES` lists the changes against
 upstream `14e88fa`. It is source-only here. Don't distribute a binary that links it into PinMAME

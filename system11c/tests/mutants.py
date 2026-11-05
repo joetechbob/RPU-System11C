@@ -79,8 +79,8 @@ run('E left high after a read', "  if (!UsesM6800Processor) PORTG &= ~0x04;", ""
 run('no TIMSK1 mask in read', "  // Atomic bus transaction (see RPU_DataWrite)\n  byte savedTIMSK1 = TIMSK1;\n  TIMSK1 = savedTIMSK1 & (byte)~_BV(OCIE1A);", "  byte savedTIMSK1 = TIMSK1;")
 run('busy flag ignores the active pulse', "if (SolenoidActiveLeft != 0 && (SolenoidActive & RPU_SOLENOID_ENTRY_COIL) < 8) busy = true;", "")
 run('boot writes the old $2203', "RPU_DataWrite(PIA_SOLENOID_11_CONTROL_B, S11C_GAMEON_DISABLED_DDR_CRB);", "RPU_DataWrite(0x2203, 0x30);")
-# SRAM sizing only: 150 entries behave the same as 32 for everything the tests exercise (fix 0006/0007 sizes).
 run('solenoid stack 150 entries instead of 32', "#define SOLENOID_STACK_SIZE 32\n", "#define SOLENOID_STACK_SIZE 150\n")
+run('switch stack back to 60 entries', "#define SWITCH_STACK_SIZE   24\n", "#define SWITCH_STACK_SIZE   60\n")
 
 shutil.rmtree(work, ignore_errors=True)
 print('%d mutant(s) not caught' % uncaught)

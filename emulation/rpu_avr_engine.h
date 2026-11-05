@@ -9,8 +9,7 @@
  *
  * ---------------------------------------------------------------------
  * RPU Rev 102 pin protocol (derived from RPU.cpp, hex image built from
- * the sketch/RPU.cpp copy of source/DinerV4RpuRuntime/RPU.cpp; line numbers
- * below are for source/DinerV4RpuRuntime/RPU.cpp):
+ * the sketch copy of RPU.cpp; line numbers below are for that copy):
  *
  *   Signal            Arduino pin  AVR pin   Dir (Mega)   RPU.cpp
  *   A0..A7            A0..A7       PF0..PF7  out          PORTF  (SetAddressPinsDirection 977; DataWrite 991-1050, DataRead 1056-1105)
@@ -68,8 +67,8 @@
  * One engine instance per process (simavr's logger is global). All calls
  * from one thread.
  */
-#ifndef DINER_V4_RPU_AVR_ENGINE_H
-#define DINER_V4_RPU_AVR_ENGINE_H
+#ifndef RPU_AVR_ENGINE_H
+#define RPU_AVR_ENGINE_H
 
 #include <stdint.h>
 

@@ -253,11 +253,13 @@ per-column mask `ImmediateSolenoidSwitchMask`. `RPU_SetupGameSwitches` clamps it
 
 **What changed.** 24 and 16 entries; 36 B and 96 B of SRAM returned.
 
-**Without it.** Nothing breaks; SRAM is used that nothing needs.
+**Without it.** The game still runs, but 132 B of the Mega's 8 KB SRAM go to queues that never fill. That memory
+comes out of the margin left for the call stack, and a stack overrun on this board corrupts state while coils are
+live. With fix 0007, the solenoid queue also drops from 150 one-byte entries to 32 two-byte entries, saving 86 B more.
 
-**Test.** None. This is a memory-sizing change with no behavioural hazard to show, and a test that passes on upstream
-would not demonstrate it. (A larger stack behaves the same; `run.sh mutants` lists the matching solenoid-stack case as
-"NOT CAUGHT" for the same reason.)
+**Test.** `queues_fit_the_sram_budget`: the solenoid and switch queues must fit 96 B and still hold one pulse for each of
+the 22 coils. The sound queue is not checked, because its free-space counter is not built for this sound type. Capacities come from the library's free-space counters, so this is a size check, not a failure you would see
+in play.
 
 **Verified.** Compiles; sized from emulation. Not on hardware.
 
@@ -466,7 +468,7 @@ which needs avr-gcc and counts the code as compiled, not as run. No scope measur
 | 0003 | 2 | yes | yes | |
 | 0004 | 2 | yes | yes | 1 ms gap from PinMAME, not the real board |
 | 0005 | 2 | yes | yes | |
-| 0006 | 0 | n/a | n/a | SRAM sizing: no hazard to show |
+| 0006 | 1 | yes | yes | size budget, read from the free-space counters |
 | 0007 | 3 | yes | yes | coin-lockout shift is a 32-bit hazard only; jet test also fails for 0005 |
 | 0008 | 1 | yes | yes | |
 | 0009 | 2 | yes (absent) | yes | no upstream equivalent |

@@ -35,8 +35,8 @@
 #include "avr/avr_mcu_section.h"
 
 #define AVR_KIND_DECL
-#ifdef DINER_RPU_SIMAVR_CORE_DECL_HEADER
-#include DINER_RPU_SIMAVR_CORE_DECL_HEADER
+#ifdef RPU_AVR_SIMAVR_CORE_DECL_HEADER
+#include RPU_AVR_SIMAVR_CORE_DECL_HEADER
 #else
 #include "sim_core_decl.h"
 #endif

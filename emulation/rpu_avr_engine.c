@@ -1,6 +1,11 @@
 /* AVR-exact RPU Rev 102 engine. See rpu_avr_engine.h for the pin protocol. */
 #include "rpu_avr_engine.h"
 
+/* The name in the engine's reports.  Set RPU_AVR_ENGINE_NAME in CMake for your machine. */
+#ifndef RPU_AVR_ENGINE_NAME
+#define RPU_AVR_ENGINE_NAME "rpu"
+#endif
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -799,7 +804,7 @@ int rpu_avr_engine_format_safety_summary(char *buf, unsigned size)
     struct rpu_avr_engine_stats st;
     rpu_avr_engine_get_stats(&st);
     int n = snprintf(buf, size,
-        "diner_rpu avr safety: sp_min 0x%04x ramend 0x%04x sp_used %u B | "
+        RPU_AVR_ENGINE_NAME " avr safety: sp_min 0x%04x ramend 0x%04x sp_used %u B | "
         "sp_below_static_end_steps %llu (0 = no observed SP/static overlap by SP value) | "
         "ramend_wrap_messages %llu (0 = no RAMEND wrapping observed; not an object bounds check) | ",
         (unsigned)st.sp_min, (unsigned)st.ramend,

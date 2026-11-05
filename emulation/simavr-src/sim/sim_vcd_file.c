@@ -32,8 +32,8 @@
 #include "sim_avr.h"
 #include "sim_time.h"
 #include "sim_utils.h"
-#ifdef DINER_RPU_SIMAVR_CORE_CONFIG_HEADER
-#include DINER_RPU_SIMAVR_CORE_CONFIG_HEADER
+#ifdef RPU_AVR_SIMAVR_CORE_CONFIG_HEADER
+#include RPU_AVR_SIMAVR_CORE_CONFIG_HEADER
 #else
 #include "sim_core_config.h"
 #endif
