@@ -26,7 +26,7 @@ Test results for the table at the end are from `tests/run.sh both`.
 
 ---
 
-## Alpha display scan (`e56a2fb`)
+## Alpha display scan
 
 **Problem.** The LA-4 alpha displays are driven by the stock ROM with a four-byte, two-row sequence per
 display strobe. The library's own scan writes four bytes per strobe (one 14-segment word split in two, and the numeric digit) and does not use that sequence.
@@ -69,7 +69,7 @@ not observable without a sanitizer.
 
 ---
 
-## System 11C configuration (`7ac2c87`)
+## System 11C configuration
 
 **Problem.** Upstream ships `RPU_Config.h` for Rev 3 / architecture 1 / 6800.
 
@@ -87,7 +87,7 @@ other tests isolate the library changes.
 
 ---
 
-## 0001: GameOn / flipper relay is PIA0 CB2 (`3e7e821`)
+## 0001: GameOn / flipper relay is PIA0 CB2
 
 **Problem.** For architectures of 10 and up the library switches the flipper and solenoid enable line by writing
 `PIA_SOLENOID_CONTROL_B`, `$2203`. On System 11C there is no PIA at `$2200-$2203`: that is the write-only U28 latch for
@@ -118,7 +118,7 @@ low, SOL1-8 requested.
 
 ---
 
-## 0002: never touch `$2201-$2203`; special and continuous solenoid map (`820cd51`)
+## 0002: never touch `$2201-$2203`; special and continuous solenoid map
 
 **Problem.** The library wrote `$2201` for the special solenoids, read and wrote `$2200/$2202` for continuous
 solenoids, and read `$2201/$2203` in `RPU_TestPIAs`. `$2200` is the write-only U28 latch (SOL1-8) with A1:A0 ignored:
@@ -162,7 +162,7 @@ written at offsets 1-3; `RPU_TestPIAs` reports error bit `0x20` on a healthy boa
 
 ---
 
-## 0003: bus transactions are atomic against the Timer1 ISR (`7e0298c`)
+## 0003: bus transactions are atomic against the Timer1 ISR
 
 **Problem.** The Timer1 ISR (lamps, switches, display, solenoids; 30 and 12-18 bus accesses per pass) uses the same
 bus pins as foreground code. An interrupt in the middle of a foreground `RPU_DataWrite` or `RPU_DataRead` changes the
@@ -192,7 +192,7 @@ the only places the bus can change, so no state is missed. Timer0 and USART0 are
 
 ---
 
-## 0004: sound goes to the sound board through the widget PIA (`efeb553`)
+## 0004: sound goes to the sound board through the widget PIA
 
 **Problem.** System 11C has no on-board sound. `RPU_PlayW11Sound` wrote PIA0 port A (`$2100`) and strobed CA2 (`$2101`),
 the System 11 / 11A on-board path, so every effect command was lost. Only `RPU_PlayW11Music`, which already used
@@ -219,7 +219,7 @@ CB2 high (`0x3C`), then wait `RPU_S11C_SOUND_COMMAND_GAP_US` (1000 us, overridab
 
 ---
 
-## 0005: switch-driven solenoids in the Timer1 ISR (`9b2c063`)
+## 0005: switch-driven solenoids in the Timer1 ISR
 
 **Problem.** `RPU_SetupGameSwitches()` registers a switch-to-solenoid table (pop bumpers, slingshots), but only the
 architecture below 10 ISR acted on it. On architecture 10 and up the jets and slingshots never fired; the stock ROM fires
@@ -245,7 +245,7 @@ per-column mask `ImmediateSolenoidSwitchMask`. `RPU_SetupGameSwitches` clamps it
 
 ---
 
-## 0006: smaller switch and sound stacks (`ebe41fd`)
+## 0006: smaller switch and sound stacks
 
 **Problem.** SRAM. `SWITCH_STACK_SIZE` 60 and `SOUND_STACK_SIZE` 64 were far larger than needed.
 
@@ -265,7 +265,7 @@ in play.
 
 ---
 
-## 0007: a solenoid-stack entry is one pulse with an on-time (`42a8866`)
+## 0007: a solenoid-stack entry is one pulse with an on-time
 
 **Problem.** `RPU_PushToSolenoidStack(n, N)` wrote N one-slot entries, so a 28-85 slot pulse (drop resets, ejects, the
 outhole and feeder at 87 ms, the subway at 176 ms) took 28-85 of the 150 FIFO entries. A few long pulses overflowed it and
@@ -302,7 +302,7 @@ The jet and sling tests share the upstream failure of fix 0005 (upstream never f
 
 ---
 
-## 0008: lamp strobe deselect before row data (`f1fb6b2`)
+## 0008: lamp strobe deselect before row data
 
 **Problem.** The lamp column was selected (`PIA_LAMPS_PORT_B`) before the new row data was written, so for one bus
 cycle the previous column's rows sat on the new column: a ghost lamp.
@@ -323,7 +323,7 @@ lamp 61, row 7 of every column with lamp 64).
 
 ---
 
-## 0009: hold-PWM for the cup diverter (`b729173`)
+## 0009: hold-PWM for the cup diverter
 
 **Problem.** The stock cup diverter (SOL14) is pulled for 560-583 ms, then held at 3.7 ms on / 29.7 ms (12.5 % duty) for 10.44 s.
 Switching it from `loop()` makes the duty depend on the sketch's loop period, and a held coil at the wrong duty overheats. The
@@ -347,7 +347,7 @@ There is nothing upstream to compare with.
 
 ---
 
-## 0010: shared-driver busy flag for the A/C relay (`d09d7ca`)
+## 0010: shared-driver busy flag for the A/C relay
 
 **Problem.** The A/C select relay (SOL12) must never switch while a coil on drivers 1-8 is on, or the relay arcs under coil current
 and the rest of the pulse goes to the C-side flasher on the same driver. The caller times a pulse from when it hands it to the library,
@@ -366,7 +366,7 @@ the switch-driven coils do not count. Read with interrupts off. 0 B SRAM.
 
 ---
 
-## 0011: coil safety at the output scheduler (`a975d08`)
+## 0011: coil safety at the output scheduler
 
 **Problem.** Three defects in the Timer1 solenoid pass.
 1. **Special-to-special handover.** The specials are CA2/CB2 outputs held low by CRx `0x34`. A jet or sling pre-empting the 87 ms
@@ -398,7 +398,7 @@ still gets its 40 slots), `continuous_deadline_enforced_by_isr` (651 ms request:
 
 ---
 
-## 0012: init writes every solenoid output off before the display PIA (`d28aedb`)
+## 0012: init writes every solenoid output off before the display PIA
 
 **Problem.** On System 11C the solenoid drivers are enabled by BLANKING, a 555 one-shot (U43) that the display PIA's PA2 (`$2800` bit 2) retriggers (36 ms timeout). An
 AVR-only reset (watchdog, brown-out, the RPU reset button) does not reset the board: the PIAs and the U28 latch keep their last state, so the display
@@ -426,7 +426,7 @@ BLANKING timed out), once for each of the 16 retained strobe values; `RPU_Initia
 
 ---
 
-## 0013: one full-width E pulse per bus transaction in 6802 mode (`42aa5ea`)
+## 0013: one full-width E pulse per bus transaction in 6802 mode
 
 **Problem.** In 6802 mode the Mega generates E. Upstream writes two back-to-back pulses of 125 ns with E left high between transactions. The Diner board does nothing to E but buffer it (U11 74LS244 to every PIA pin 25;
 no stretching), so each PIA saw an E pulse of 125 ns against an MC6821 minimum of 450 ns, the U28 latch strobe (E and write gated) is just as short, and a read was sampled about 94 ns after the second rise
@@ -457,12 +457,12 @@ which needs avr-gcc and counts the code as compiled, not as run. No scope measur
 
 ## Results
 
-`tests/run.sh both`: 34 tests. Every test fails on upstream and passes on the branch. Mutation check (`tests/run.sh mutants`): 20 deliberate single-point defects in the branch library, 19 caught by at least one test; the one not caught is the solenoid FIFO depth (32 against 150).
+`tests/run.sh both`: 35 tests. Every test fails on upstream and passes on the branch. Mutation check (`tests/run.sh mutants`): 21 deliberate single-point defects, and a named test catches every one.
 
 | Fix | Tests | Fails on upstream | Passes on branch | Notes |
 |---|---|---|---|---|
-| alpha (`e56a2fb`) | 2 | yes | yes | hardening items untested |
-| config (`7ac2c87`) | 0 | n/a | n/a | configuration: nothing to fail |
+| alpha | 2 | yes | yes | hardening items untested |
+| config | 0 | n/a | n/a | configuration: nothing to fail |
 | 0001 | 3 | yes | yes | |
 | 0002 | 5 | yes | yes | compile-time poisoning untestable |
 | 0003 | 2 | yes | yes | |

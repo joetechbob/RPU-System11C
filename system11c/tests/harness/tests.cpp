@@ -535,7 +535,7 @@ TEST(lamp_rows_match_column_when_selected, "0008", "Whenever a lamp column is se
 }
 
 // =================================================================================================
-// e56a2fb  Raw alpha display scan, display PIA setup
+// Raw alpha display scan, display PIA setup
 // =================================================================================================
 TEST(alpha_scan_nine_write_sequence, "alpha", "Each display strobe writes the stock nine-write sequence (alpha ports blanked, strobe, then the inverted words)") {
   bring_up();

@@ -86,7 +86,7 @@ system11c/tests/run.sh upstream   # run the same tests on upstream RPU.cpp (21b1
 system11c/tests/run.sh both       # both, then one table: fails on upstream / passes on branch
 system11c/tests/run.sh list       # list the tests and the hazard each one states
 system11c/tests/run.sh mutants    # break each fix in a scratch copy; the tests must notice
-system11c/tests/run.sh codediff   # code identical to HEAD apart from comments?  (add a ref: codediff 42aa5ea)
+system11c/tests/run.sh codediff   # code identical to HEAD apart from comments?
 system11c/tests/run.sh pulse      # optional: count AVR cycles of the E pulse in the compiled code
 ```
 
